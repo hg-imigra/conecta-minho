@@ -914,8 +914,22 @@ export default function PublicarScreen() {
             <Pressable
               style={styles.successButton}
               onPress={() => {
+                // Fecha a confirmação antes de sair do formulário.
                 setSucessoVisivel(false);
-                router.replace('/');
+
+                // Na versão web, força uma navegação completa para a página
+                // inicial. Isto evita manter a árvore React que ficou em erro.
+                if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                  window.location.assign('/');
+                  return;
+                }
+
+                // Na aplicação nativa, mantém a navegação normal do Expo Router.
+                if (router.canGoBack()) {
+                  router.back();
+                } else {
+                  router.replace('/');
+                }
               }}
             >
               <Text style={styles.successButtonText}>Ir para o início</Text>
