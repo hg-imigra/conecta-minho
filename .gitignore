@@ -1,0 +1,44 @@
+
+# Dependencias
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Ficheiros de ambiente e credenciais
+.env
+.env.*
+!.env.example
+*.local
+
+# Aplicacoes nativas
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+/ios
+/android
+
+# Metro
+.metro-health-check*
+
+# Logs e depuracao
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# TypeScript
+*.tsbuildinfo
+
+# Configuracoes locais do VS Code
+.vscode/
