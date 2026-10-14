@@ -142,6 +142,7 @@ type NewsItem = {
   resumo: string;
   data: string;
   fonte: string;
+  link?: string;
 };
 
 type Anuncio = {
@@ -683,6 +684,16 @@ const preco = (
     .replace('.', ',')} €`;
 };
 
+// Impede que uma fonte RSS deixe a interface presa indefinidamente.
+const fetchComTimeout = async (url: string, timeoutMs = 4500) => {
+  return await Promise.race([
+    fetch(url),
+    new Promise<Response>((_, reject) => {
+      setTimeout(() => reject(new Error('A fonte de notícias demorou demasiado a responder.')), timeoutMs);
+    }),
+  ]);
+};
+
 export default function MaisScreen() {
   const router = useRouter();
 
@@ -786,122 +797,94 @@ export default function MaisScreen() {
     setEnviandoContacto,
   ] = useState(false);
 
-  const carregarNoticias = async () => {
+  const [sucessoContacto, setSucessoContacto] =
+    useState(false);
+
+  const carregarNoticias = async (cidadeSolicitada?: Regiao) => {
     setCarregandoNoticias(true);
     setErroNoticias('');
 
     try {
-      const resultados =
-        await Promise.all(
-          REGIOES.map(
-            async (cidade) => {
-              const query =
-                encodeURIComponent(
-                  `${cidade} Portugal`
-                );
+      const cidadesParaCarregar = cidadeSolicitada
+        ? [cidadeSolicitada]
+        : REGIOES;
 
-              const url =
-                `https://news.google.com/rss/search?q=${query}&hl=pt-PT&gl=PT&ceid=PT:pt-150`;
+      const resultados = await Promise.all(
+        cidadesParaCarregar.map(async (cidade) => {
+          const rssUrl =
+            `https://news.google.com/rss/search?q=${encodeURIComponent(`${cidade} Portugal`)}&hl=pt-PT&gl=PT&ceid=PT:pt-150`;
+          const itensNormalizados = (itensOriginais: any[], fontePadrao: string): NewsItem[] =>
+            itensOriginais.slice(0, 8).map((item: any, index: number) => ({
+              id: `${cidade}-${index}-${String(item.title || item.titulo || 'noticia')}`,
+              titulo: decodeHtml(String(item.title || item.titulo || 'Notícia local')),
+              resumo: extrairResumo(String(item.description || item.content || item.resumo || '')),
+              data: formatarData(String(item.pubDate || item.published || item.data || '')),
+              fonte: decodeHtml(String(item.author || item.source || item.fonte || fontePadrao)),
+              link: String(item.link || item.url || ''),
+            })).filter((item: NewsItem) => Boolean(item.titulo));
 
-              const resposta =
-                await fetch(url);
-
-              if (!resposta.ok) {
-                throw new Error(
-                  `HTTP ${resposta.status}`
-                );
-              }
-
-              const xml =
-                await resposta.text();
-
-              const blocos =
-                xml.match(
-                  /<item>([\s\S]*?)<\/item>/gi
-                ) || [];
-
-              const itens =
-                blocos
-                  .slice(0, 8)
-                  .map(
-                    (
-                      item,
-                      index
-                    ) => ({
-                      id: `${cidade}-${index}-${xmlTag(
-                        item,
-                        'title'
-                      )}`,
-                      titulo:
-                        xmlTag(
-                          item,
-                          'title'
-                        ) ||
-                        'Notícia local',
-                      resumo:
-                        extrairResumo(
-                          xmlTag(
-                            item,
-                            'description'
-                          )
-                        ),
-                      data:
-                        formatarData(
-                          xmlTag(
-                            item,
-                            'pubDate'
-                          )
-                        ),
-                      fonte:
-                        xmlTag(
-                          item,
-                          'source'
-                        ) ||
-                        'Google News',
-                    })
-                  )
-                  .filter(
-                    (item) =>
-                      item.titulo
-                  );
-
-              return {
-                cidade,
-                itens,
-              };
+          // Tentativa 1: conversor RSS para JSON.
+          try {
+            const urlJson = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
+            const resposta = await fetchComTimeout(urlJson, 4500);
+            if (!resposta.ok) throw new Error(`RSS2JSON HTTP ${resposta.status}`);
+            const dados = await resposta.json();
+            if (dados?.status === 'ok' && Array.isArray(dados?.items) && dados.items.length) {
+              return { cidade, itens: itensNormalizados(dados.items, dados.feed?.title || 'Google News') };
             }
-          )
-        );
+            throw new Error(dados?.message || 'RSS2JSON não devolveu notícias.');
+          } catch (erroJson) {
+            console.log(`Primeira fonte de notícias falhou para ${cidade}:`, erroJson);
+          }
 
-      const novoEstado: Record<
-        Regiao,
-        NewsItem[]
-      > = {
-        Guimarães: [],
-        Vizela: [],
-        Fafe: [],
+          // Tentativa 2: obter o RSS XML através de um proxy público alternativo.
+          const urlsAlternativos = [
+            `https://api.allorigins.win/raw?url=${encodeURIComponent(rssUrl)}`,
+            `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rssUrl)}`,
+          ];
+
+          for (const urlAlternativo of urlsAlternativos) {
+            try {
+              const resposta = await fetchComTimeout(urlAlternativo, 4500);
+              if (!resposta.ok) throw new Error(`Proxy HTTP ${resposta.status}`);
+              const xml = await resposta.text();
+              const blocos = xml.match(/<item(?:\s[^>]*)?>[\s\S]*?<\/item>/gi) || [];
+              const itensXml = blocos.slice(0, 8).map((bloco, index) => ({
+                title: xmlTag(bloco, 'title'),
+                description: xmlTag(bloco, 'description'),
+                pubDate: xmlTag(bloco, 'pubDate'),
+                author: xmlTag(bloco, 'source') || 'Google News',
+                index,
+              })).filter((item) => Boolean(item.title));
+
+              if (itensXml.length) {
+                return { cidade, itens: itensNormalizados(itensXml, 'Google News') };
+              }
+              throw new Error('O RSS não contém notícias legíveis.');
+            } catch (erroProxy) {
+              console.log(`Fonte alternativa falhou para ${cidade}:`, erroProxy);
+            }
+          }
+
+          return { cidade, itens: [] as NewsItem[] };
+        })
+      );
+
+      const novoEstado: Record<Regiao, NewsItem[]> = {
+        ...noticias,
       };
+      resultados.forEach((resultado) => {
+        novoEstado[resultado.cidade] = resultado.itens;
+      });
+      setNoticias(novoEstado);
 
-      resultados.forEach(
-        (resultado) => {
-          novoEstado[
-            resultado.cidade
-          ] =
-            resultado.itens;
-        }
-      );
-
-      setNoticias(
-        novoEstado
-      );
+      if (resultados.every((resultado) => resultado.itens.length === 0)) {
+        throw new Error('As fontes de notícias não responderam. Tente novamente dentro de momentos.');
+      }
     } catch (error) {
-      console.log(
-        'Erro ao carregar notícias:',
-        error
-      );
-
+      console.log('Erro ao carregar Conecta News:', error);
       setErroNoticias(
-        'Não foi possível atualizar as notícias neste momento. Tente novamente.'
+        'As fontes de notícias não responderam a tempo. Verifique a ligação à Internet e tente novamente dentro de momentos.'
       );
     } finally {
       setCarregandoNoticias(false);
@@ -1107,20 +1090,7 @@ export default function MaisScreen() {
         setNomeContacto('');
         setEmailContacto('');
         setMensagemContacto('');
-
-        Alert.alert(
-          'Mensagem enviada',
-          'A sua mensagem foi enviada com sucesso.',
-          [
-            {
-              text: 'OK',
-              onPress: () =>
-                setModalContacto(
-                  false
-                ),
-            },
-          ]
-        );
+        setSucessoContacto(true);
       } catch (error: any) {
         console.log(
           'Erro EmailJS:',
@@ -1140,8 +1110,8 @@ export default function MaisScreen() {
     };
 
   useEffect(() => {
-    if (modalNoticias) {
-      carregarNoticias();
+    if (modalNoticias && noticias[regiaoNoticias].length === 0) {
+      carregarNoticias(regiaoNoticias);
     }
   }, [modalNoticias]);
 
@@ -2106,7 +2076,7 @@ export default function MaisScreen() {
                 styles.regionTitle
               }
             >
-              Notícias
+              Conecta News
             </Text>
 
             <Text
@@ -2234,11 +2204,10 @@ export default function MaisScreen() {
           style={
             styles.helpCard
           }
-          onPress={() =>
-            setModalContacto(
-              true
-            )
-          }
+          onPress={() => {
+            setSucessoContacto(false);
+            setModalContacto(true);
+          }}
         >
           <View
             style={[
@@ -2537,7 +2506,7 @@ export default function MaisScreen() {
                 styles.footerBrand
               }
             >
-              Conecta Guimarães
+              Conecta Minho
             </Text>
 
             <Text
@@ -2545,7 +2514,7 @@ export default function MaisScreen() {
                 styles.footerCities
               }
             >
-              Guimarães • Vizela • Fafe
+              Guimarães · Vizela · Fafe
             </Text>
           </View>
         </View>
@@ -3035,7 +3004,7 @@ export default function MaisScreen() {
                       styles.modalTitle
                     }
                   >
-                    Notícias locais
+                    Conecta News
                   </Text>
 
                   <Text
@@ -3082,11 +3051,13 @@ export default function MaisScreen() {
                           cidade &&
                           styles.cityTabActive,
                       ]}
-                      onPress={() =>
-                        setRegiaoNoticias(
-                          cidade
-                        )
-                      }
+                      onPress={() => {
+                        setRegiaoNoticias(cidade);
+                        setErroNoticias('');
+                        if (noticias[cidade].length === 0) {
+                          carregarNoticias(cidade);
+                        }
+                      }}
                     >
                       <Text
                         style={[
@@ -3107,8 +3078,8 @@ export default function MaisScreen() {
                 style={
                   styles.refreshButton
                 }
-                onPress={
-                  carregarNoticias
+                onPress={() =>
+                  carregarNoticias(regiaoNoticias)
                 }
                 disabled={
                   carregandoNoticias
@@ -3125,7 +3096,7 @@ export default function MaisScreen() {
                       styles.refreshButtonText
                     }
                   >
-                    ↻ Atualizar notícias
+                    ↻ Atualizar Conecta News
                   </Text>
                 )}
               </TouchableOpacity>
@@ -3186,8 +3157,8 @@ export default function MaisScreen() {
                       style={
                         styles.retryButton
                       }
-                      onPress={
-                        carregarNoticias
+                      onPress={() =>
+                        carregarNoticias(regiaoNoticias)
                       }
                     >
                       <Text
@@ -3205,10 +3176,12 @@ export default function MaisScreen() {
                   regiaoNoticias
                 ].map(
                   (noticia) => (
-                    <View
+                    <TouchableOpacity
                       key={
                         noticia.id
                       }
+                      activeOpacity={noticia.link ? 0.82 : 1}
+                      onPress={() => noticia.link && abrirLink(noticia.link)}
                       style={
                         styles.newsCard
                       }
@@ -3258,7 +3231,7 @@ export default function MaisScreen() {
                           noticia.resumo
                         }
                       </Text>
-                    </View>
+                    </TouchableOpacity>
                   )
                 )}
               </ScrollView>
@@ -4118,13 +4091,74 @@ export default function MaisScreen() {
                 }
                 keyboardShouldPersistTaps="handled"
               >
-                <Text
-                  style={
-                    styles.inputLabel
-                  }
-                >
-                  Nome
-                </Text>
+                {sucessoContacto ? (
+                  <View
+                    style={{
+                      margin: 20,
+                      padding: 24,
+                      borderRadius: 18,
+                      backgroundColor: '#EAF8EF',
+                      borderWidth: 1,
+                      borderColor: '#B9E7C8',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Text style={{ fontSize: 42, marginBottom: 12 }}>
+                      ✓
+                    </Text>
+                    <Text
+                      style={{
+                        fontSize: 22,
+                        lineHeight: 28,
+                        fontWeight: '900',
+                        color: '#176B3A',
+                        textAlign: 'center',
+                        marginBottom: 10,
+                      }}
+                    >
+                      Mensagem enviada com sucesso!
+                    </Text>
+                    <Text
+                      style={{
+                        fontSize: 15,
+                        lineHeight: 23,
+                        color: '#285A3B',
+                        textAlign: 'center',
+                      }}
+                    >
+                      Recebemos a sua mensagem. Obrigado por entrar em contacto com o Conecta Minho.
+                    </Text>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() => setModalContacto(false)}
+                      style={{
+                        marginTop: 22,
+                        paddingVertical: 13,
+                        paddingHorizontal: 28,
+                        borderRadius: 12,
+                        backgroundColor: '#187BB9',
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: '#FFFFFF',
+                          fontSize: 15,
+                          fontWeight: '800',
+                        }}
+                      >
+                        Fechar
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <>
+                    <Text
+                      style={
+                        styles.inputLabel
+                      }
+                    >
+                      Nome
+                    </Text>
 
                 <TextInput
                   value={
@@ -4235,7 +4269,9 @@ export default function MaisScreen() {
                       Enviar mensagem
                     </Text>
                   )}
-                </TouchableOpacity>
+                    </TouchableOpacity>
+                  </>
+                )}
               </ScrollView>
             </View>
           </View>
@@ -4517,26 +4553,28 @@ const styles =
     },
 
     content: {
-      paddingHorizontal: 16,
-      paddingTop: 16,
-      paddingBottom: 35,
+      paddingHorizontal: 20,
+      paddingTop: 26,
+      paddingBottom: 48,
       width: '100%',
-      maxWidth: 700,
+      maxWidth: 900,
       alignSelf: 'center',
     },
 
     /* HERO */
 
     hero: {
-      minHeight: 190,
-      borderRadius: 27,
-      backgroundColor: '#1677B8',
+      minHeight: 258,
+      borderRadius: 34,
+      backgroundColor: '#0B5F9B',
       overflow: 'hidden',
       position: 'relative',
-      marginBottom: 24,
-      paddingHorizontal: 20,
-      paddingTop: 20,
-      paddingBottom: 18,
+      marginBottom: 38,
+      paddingHorizontal: 32,
+      paddingTop: 32,
+      paddingBottom: 30,
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.18)',
     },
 
     heroGlowOne: {
@@ -4560,34 +4598,40 @@ const styles =
     },
 
     heroTextArea: {
-      width: '61%',
+      width: '66%',
       zIndex: 2,
     },
 
     heroTitle: {
       color: '#FFFFFF',
-      fontSize: 29,
-      lineHeight: 33,
+      fontSize: 34,
+      lineHeight: 39,
       fontWeight: '900',
-      maxWidth: 260,
+      maxWidth: 290,
+      letterSpacing: -0.5,
     },
 
     heroSubtitle: {
       color: '#EAF6FF',
-      fontSize: 15,
-      lineHeight: 21,
+      fontSize: 17,
+      lineHeight: 24,
       fontWeight: '600',
-      marginTop: 7,
+      marginTop: 8,
     },
 
     heroTag: {
       alignSelf: 'flex-start',
-      maxWidth: 205,
-      backgroundColor: 'rgba(255,255,255,0.96)',
-      borderRadius: 15,
-      paddingHorizontal: 11,
-      paddingVertical: 8,
-      marginTop: 15,
+      maxWidth: 225,
+      backgroundColor: '#FFFFFF',
+      borderRadius: 18,
+      paddingHorizontal: 17,
+      paddingVertical: 11,
+      marginTop: 20,
+      shadowColor: '#063D68',
+      shadowOpacity: 0.12,
+      shadowRadius: 8,
+      shadowOffset: { width: 0, height: 3 },
+      elevation: 2,
     },
 
     heroTagText: {
@@ -4601,8 +4645,8 @@ const styles =
       position: 'absolute',
       right: 15,
       bottom: 13,
-      width: 142,
-      height: 132,
+      width: 158,
+      height: 148,
       zIndex: 1,
     },
 
@@ -4752,10 +4796,9 @@ const styles =
     sectionHeader: {
       flexDirection: 'row',
       alignItems: 'flex-end',
-      justifyContent:
-        'space-between',
-      marginBottom: 12,
-      marginTop: 4,
+      justifyContent: 'space-between',
+      marginBottom: 14,
+      marginTop: 8,
     },
 
     sectionHeaderNoButton: {
@@ -4764,10 +4807,11 @@ const styles =
     },
 
     sectionTitle: {
-      fontSize: 22,
-      lineHeight: 27,
+      fontSize: 23,
+      lineHeight: 29,
       fontWeight: '900',
       color: '#1D2733',
+      letterSpacing: -0.25,
     },
 
     sectionSubtitle: {
@@ -4797,24 +4841,29 @@ const styles =
 
     quickCard: {
       width: '31.7%',
-      minHeight: 139,
+      minHeight: 174,
       backgroundColor: '#FFFFFF',
-      borderRadius: 18,
+      borderRadius: 24,
       borderWidth: 1,
-      borderColor: '#E1E6EB',
-      paddingHorizontal: 10,
-      paddingVertical: 11,
-      marginBottom: 10,
+      borderColor: '#D7E4EE',
+      paddingHorizontal: 16,
+      paddingVertical: 17,
+      marginBottom: 16,
+      shadowColor: '#244B65',
+      shadowOpacity: 0.075,
+      shadowRadius: 11,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 2,
     },
 
     quickIconBox: {
-      width: 43,
-      height: 43,
-      borderRadius: 14,
+      width: 50,
+      height: 50,
+      borderRadius: 17,
       backgroundColor: '#EAF4FB',
       alignItems: 'center',
       justifyContent: 'center',
-      marginBottom: 8,
+      marginBottom: 10,
     },
 
     quickIcon: {
@@ -4822,8 +4871,8 @@ const styles =
     },
 
     quickTitle: {
-      fontSize: 13.5,
-      lineHeight: 17,
+      fontSize: 14,
+      lineHeight: 18,
       fontWeight: '900',
       color: '#1F2A36',
     },
@@ -4847,11 +4896,11 @@ const styles =
 
     serviceCard: {
       width: '48.5%',
-      minHeight: 91,
-      borderRadius: 17,
+      minHeight: 108,
+      borderRadius: 21,
       borderWidth: 1,
-      padding: 10,
-      marginBottom: 10,
+      padding: 13,
+      marginBottom: 13,
       flexDirection: 'row',
       alignItems: 'center',
       position: 'relative',
@@ -4973,20 +5022,25 @@ const styles =
 
     regionCard: {
       width: '23.6%',
-      minHeight: 120,
+      minHeight: 154,
       backgroundColor: '#FFFFFF',
-      borderRadius: 17,
+      borderRadius: 25,
       borderWidth: 1,
-      borderColor: '#E1E6EB',
+      borderColor: '#DCE6EE',
       alignItems: 'center',
-      paddingHorizontal: 6,
-      paddingVertical: 10,
+      paddingHorizontal: 10,
+      paddingVertical: 16,
+      shadowColor: '#244B65',
+      shadowOpacity: 0.065,
+      shadowRadius: 9,
+      shadowOffset: { width: 0, height: 3 },
+      elevation: 2,
     },
 
     regionIconBox: {
-      width: 43,
-      height: 43,
-      borderRadius: 14,
+      width: 48,
+      height: 48,
+      borderRadius: 16,
       backgroundColor: '#EAF4FB',
       alignItems: 'center',
       justifyContent: 'center',
@@ -4998,16 +5052,16 @@ const styles =
     },
 
     regionTitle: {
-      fontSize: 11.5,
-      lineHeight: 15,
+      fontSize: 12.5,
+      lineHeight: 17,
       fontWeight: '900',
       color: '#27313D',
       textAlign: 'center',
     },
 
     regionDescription: {
-      fontSize: 9.5,
-      lineHeight: 12,
+      fontSize: 10.5,
+      lineHeight: 14,
       color: '#737D87',
       textAlign: 'center',
       marginTop: 3,
@@ -5166,53 +5220,46 @@ const styles =
     /* RODAPÉ */
 
     footer: {
-      height: 125,
-      marginTop: 3,
-      marginHorizontal: -16,
-      backgroundColor: '#DFF1FC',
+      minHeight: 112,
+      marginTop: 26,
+      marginHorizontal: 0,
+      marginBottom: 8,
+      backgroundColor: '#0E5E96',
       overflow: 'hidden',
       position: 'relative',
       alignItems: 'center',
-      justifyContent:
-        'flex-end',
+      justifyContent: 'center',
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: '#0E5E96',
+      paddingVertical: 24,
     },
 
     footerWaveOne: {
-      position: 'absolute',
-      width: '140%',
-      height: 90,
-      borderRadius: 90,
-      backgroundColor: '#C9E8F8',
-      top: 48,
-      left: '-20%',
+      display: 'none',
     },
 
     footerWaveTwo: {
-      position: 'absolute',
-      width: '120%',
-      height: 70,
-      borderRadius: 70,
-      backgroundColor: '#B6DCF1',
-      top: 72,
-      left: '-10%',
+      display: 'none',
     },
 
     footerContent: {
       zIndex: 2,
       alignItems: 'center',
-      paddingBottom: 19,
+      paddingBottom: 0,
     },
 
     footerBrand: {
-      fontSize: 15,
+      fontSize: 21,
       fontWeight: '900',
-      color: '#36546A',
+      letterSpacing: 0.25,
+      color: '#FFFFFF',
     },
 
     footerCities: {
-      fontSize: 11.5,
-      color: '#708A9B',
-      marginTop: 4,
+      fontSize: 13,
+      color: '#D9ECF8',
+      marginTop: 5,
     },
 
     /* MODAIS */
