@@ -25,6 +25,8 @@ export default function Root({ children }: PropsWithChildren) {
           name="description"
           content="Conecta Minho â€” serviÃ§os, profissionais e oportunidades perto de ti."
         />
+        <link rel="icon" type="image/png" href="/favicon.ico" />
+
         <link rel="manifest" href="/manifest.json" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
         <ScrollViewStyleReset />
@@ -59,4 +61,6 @@ export default function Root({ children }: PropsWithChildren) {
     </html>
   );
 }
+
+
 
