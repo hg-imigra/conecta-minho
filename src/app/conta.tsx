@@ -134,6 +134,22 @@ export default function ContaScreen() {
     useState<'escolha' | 'autenticacao'>('escolha');
 
   const [modoAdministrador, setModoAdministrador] = useState(false);
+  const [erroAcessoAdministrador, setErroAcessoAdministrador] = useState(false);
+
+  // Mostra o aviso de acesso negado e regressa automaticamente à escolha de perfis.
+  useEffect(() => {
+    if (!erroAcessoAdministrador || !modoAdministrador) return;
+
+    const temporizador = setTimeout(() => {
+      setErroAcessoAdministrador(false);
+      setModoAdministrador(false);
+      setModoRegisto(false);
+      setPassword('');
+      setEtapaConta('escolha');
+    }, 3500);
+
+    return () => clearTimeout(temporizador);
+  }, [erroAcessoAdministrador, modoAdministrador]);
 
   const [pedidos, setPedidos] =
     useState<PedidoOrcamento[]>([]);
@@ -923,8 +939,25 @@ export default function ContaScreen() {
       return;
     }
 
-    // MASTER entra na área administrativa e não recebe metadados de conta normal.
-    if (data.user.email?.trim().toLowerCase() === MASTER_EMAIL.toLowerCase()) {
+    const emailAutenticado = data.user.email?.trim().toLowerCase() ?? '';
+
+    // O perfil de administrador só pode ser utilizado pela conta MASTER autenticada.
+    // A escolha visual do perfil nunca concede permissões administrativas.
+    if (modoAdministrador && emailAutenticado !== MASTER_EMAIL.toLowerCase()) {
+      await supabase.auth.signOut();
+      setSession(null);
+      setLoading(false);
+      setPassword('');
+      setErroAcessoAdministrador(true);
+      // Mantém o utilizador neste ecrã para que o aviso fique visível.
+      // Não redireciona para a página principal nem concede acesso administrativo.
+      return;
+    }
+
+    setErroAcessoAdministrador(false);
+
+    // A conta MASTER autenticada entra sempre na área administrativa.
+    if (emailAutenticado === MASTER_EMAIL.toLowerCase()) {
       setSession(data.session);
       setLoading(false);
       router.replace('/admin');
@@ -3368,7 +3401,7 @@ export default function ContaScreen() {
           <Text
             style={s.choiceWelcomeText}
           >
-            Estamos felizes por ter você por aqui.
+            Para explorar o Conecta Minho, inicia sessão ou cria a tua conta gratuita.
           </Text>
 
           <View style={s.choiceDivider}>
@@ -3386,13 +3419,13 @@ export default function ContaScreen() {
             adjustsFontSizeToFit
             minimumFontScale={0.78}
           >
-            Como pretende utilizar o Conecta?
+            Como queres utilizar o Conecta Minho?
           </Text>
 
           <Text
             style={s.choiceSubtitle}
           >
-            Escolha uma opção para continuar.
+            Escolhe o teu perfil. Depois, podes iniciar sessão ou criar uma conta.
           </Text>
 
           <TouchableOpacity
@@ -3560,7 +3593,9 @@ export default function ContaScreen() {
           <TouchableOpacity
             style={s.choiceOptionAdmin}
             onPress={() => {
+              setErroAcessoAdministrador(false);
               setModoAdministrador(true);
+              setModoRegisto(false);
               setEtapaConta('autenticacao');
             }}
             activeOpacity={0.82}
@@ -3614,6 +3649,21 @@ export default function ContaScreen() {
           <Text style={s.title}>
             {modoRedefinirPassword ? 'Definir nova palavra-passe' : modoRecuperacao ? 'Recuperar palavra-passe' : modoRegisto ? 'Criar conta' : 'Iniciar sessão'}
           </Text>
+
+          {erroAcessoAdministrador && modoAdministrador ? (
+            <View
+              accessibilityRole="alert"
+              accessibilityLiveRegion="assertive"
+              style={s.adminAccessDeniedBanner}
+            >
+              <Text style={s.adminAccessDeniedTitle}>
+                ⛔ ACESSO NÃO AUTORIZADO
+              </Text>
+              <Text style={s.adminAccessDeniedText}>
+                Não tens autorização para entrar como administrador. Vais regressar à escolha de perfis.
+              </Text>
+            </View>
+          ) : null}
 
           {!modoRecuperacao && !modoRedefinirPassword ? <View
             style={
@@ -3826,6 +3876,34 @@ const s = StyleSheet.create({
   pendingNoticeText: { color: '#805B00', fontSize: 13, fontWeight: '700' },
   pendingCount: { minWidth: 32, height: 32, paddingHorizontal: 8, borderRadius: 16, backgroundColor: '#EAF4FB', alignItems: 'center', justifyContent: 'center' },
   pendingCountText: { color: '#1677B8', fontWeight: '900' },
+
+  adminAccessDeniedBanner: {
+    width: '100%',
+    marginTop: 16,
+    marginBottom: 18,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    borderWidth: 3,
+    borderColor: '#B91C1C',
+    backgroundColor: '#FEF2F2',
+    alignItems: 'center',
+  },
+  adminAccessDeniedTitle: {
+    color: '#B91C1C',
+    fontSize: 23,
+    lineHeight: 29,
+    fontWeight: '900',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  adminAccessDeniedText: {
+    color: '#7F1D1D',
+    fontSize: 16,
+    lineHeight: 23,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
 
   page: {
     flex: 1,

@@ -1,3 +1,4 @@
+
 import { Stack, usePathname, useRouter } from 'expo-router';
 import { useEffect } from 'react';
 import { supabase } from '../supabase';
@@ -11,24 +12,37 @@ export default function AppTabs() {
   useEffect(() => {
     let ativo = true;
 
-    async function verificarAcessoMaster() {
+    async function verificarAutenticacao() {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
 
-        if (!ativo || !session?.user?.email) return;
+        if (!ativo || error) return;
 
-        const email = session.user.email.trim().toLowerCase();
+        const email = session?.user?.email?.trim().toLowerCase();
+        const estaNaConta = pathname === '/conta';
+        const estaNoAdmin = pathname === '/admin';
 
-        // Apenas a conta MASTER fica limitada à área administrativa.
-        if (email === MASTER_EMAIL && pathname !== '/admin') {
-          router.replace('/admin');
+        // A conta MASTER só pode entrar na área administrativa.
+        if (email === MASTER_EMAIL) {
+          if (!estaNoAdmin) {
+            router.replace('/admin');
+          }
+          return;
+        }
+
+        // Sem sessão, só é permitido aceder ao ecrã de conta.
+        if (!session && !estaNaConta) {
+          router.replace('/conta');
         }
       } catch (error) {
-        console.log('Não foi possível verificar a sessão MASTER:', error);
+        console.error('Erro ao verificar autenticação:', error);
       }
     }
 
-    verificarAcessoMaster();
+    verificarAutenticacao();
 
     return () => {
       ativo = false;
