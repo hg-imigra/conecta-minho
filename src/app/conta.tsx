@@ -133,6 +133,8 @@ export default function ContaScreen() {
   const [etapaConta, setEtapaConta] =
     useState<'escolha' | 'autenticacao'>('escolha');
 
+  const [modoAdministrador, setModoAdministrador] = useState(false);
+
   const [pedidos, setPedidos] =
     useState<PedidoOrcamento[]>([]);
 
@@ -983,6 +985,7 @@ export default function ContaScreen() {
   function selecionarTipoParaConta(
     tipo: TipoConta
   ) {
+    setModoAdministrador(false);
     setTipoConta(tipo);
 
     setPlanoConta(
@@ -3182,8 +3185,8 @@ export default function ContaScreen() {
               <Text style={s.accountTypeTitle}>Perfil no Conecta</Text>
               <Text style={s.accountTypeSubtitle}>A sua conta está configurada como:</Text>
               <View style={s.sessionSelectedProfileBox}>
-                <Text style={s.selectedProfileTitle}>{nomeTipoConta(tipoConta)}</Text>
-                <Text style={s.selectedProfileDescription}>{descricaoTipoConta(tipoConta)}</Text>
+                <Text style={s.selectedProfileTitle}>{modoAdministrador ? 'Acesso de administrador' : nomeTipoConta(tipoConta)}</Text>
+                <Text style={s.selectedProfileDescription}>{modoAdministrador ? 'Área reservada à conta MASTER autorizada.' : descricaoTipoConta(tipoConta)}</Text>
                 <Text style={s.preferencePlan}>Plano associado: {planoConta}</Text>
               </View>
               <TouchableOpacity
@@ -3359,7 +3362,7 @@ export default function ContaScreen() {
             adjustsFontSizeToFit
             minimumFontScale={0.72}
           >
-            Bem-vindo ao CONECTA MINHO! 👋
+            Bem-vindo!
           </Text>
 
           <Text
@@ -3554,6 +3557,31 @@ export default function ContaScreen() {
               </Text>
             </View>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={s.choiceOptionAdmin}
+            onPress={() => {
+              setModoAdministrador(true);
+              setEtapaConta('autenticacao');
+            }}
+            activeOpacity={0.82}
+          >
+            <View style={s.choiceIconAdmin}>
+              <Text style={s.choiceAdminIcon}>♙</Text>
+              <View style={s.choiceAdminLock}>
+                <Text style={s.choiceAdminLockText}>●</Text>
+              </View>
+            </View>
+            <View style={s.choiceOptionText}>
+              <Text style={s.choiceOptionTitle}>Sou administrador</Text>
+              <Text style={s.choiceOptionDescription}>
+                Acesso reservado à administração do Conecta Minho.
+              </Text>
+            </View>
+            <View style={s.choiceArrow}>
+              <Text style={s.choiceArrowText}>›</Text>
+            </View>
+          </TouchableOpacity>
+
 
         </View>
       </ScrollView>
@@ -3605,9 +3633,7 @@ export default function ContaScreen() {
                 s.selectedProfileTitle
               }
             >
-              {nomeTipoConta(
-                tipoConta
-              )}
+              {modoAdministrador ? 'Acesso de administrador' : nomeTipoConta(tipoConta)}
             </Text>
 
             <Text
@@ -3615,9 +3641,7 @@ export default function ContaScreen() {
                 s.selectedProfileDescription
               }
             >
-              {descricaoTipoConta(
-                tipoConta
-              )}
+              {modoAdministrador ? 'Área reservada à conta MASTER autorizada.' : descricaoTipoConta(tipoConta)}
             </Text>
           </View> : null}
 
@@ -3920,6 +3944,47 @@ const s = StyleSheet.create({
     marginBottom: 12,
   },
 
+  choiceOptionAdmin: {
+    width: '100%',
+    minHeight: 118,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#BBD3F5',
+    backgroundColor: '#F0F6FF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 15,
+    paddingHorizontal: 15,
+    marginBottom: 12,
+  },
+  choiceIconAdmin: {
+    width: 62,
+    height: 62,
+    borderRadius: 19,
+    backgroundColor: '#DFEBFC',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  choiceAdminIcon: {
+    fontSize: 32,
+    color: '#214B7A',
+  },
+  choiceAdminLock: {
+    position: 'absolute',
+    right: 5,
+    bottom: 4,
+    width: 19,
+    height: 19,
+    borderRadius: 10,
+    backgroundColor: '#214B7A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  choiceAdminLockText: {
+    fontSize: 10,
+    color: '#FFFFFF',
+  },
   choiceOptionCompany: {
     width: '100%',
     minHeight: 118,
