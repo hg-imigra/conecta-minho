@@ -1,4 +1,4 @@
-
+﻿
 import { ScrollViewStyleReset } from 'expo-router/html';
 import type { PropsWithChildren } from 'react';
 
@@ -23,10 +23,10 @@ export default function Root({ children }: PropsWithChildren) {
         />
         <meta
           name="description"
-          content="Conecta Minho — serviços, profissionais e oportunidades perto de ti."
+          content="Conecta Minho â€” serviÃ§os, profissionais e oportunidades perto de ti."
         />
         <link rel="manifest" href="/manifest.json" />
-        <link rel="apple-touch-icon" href="/icon-192.png" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
         <ScrollViewStyleReset />
       </head>
       <body>
@@ -59,3 +59,4 @@ export default function Root({ children }: PropsWithChildren) {
     </html>
   );
 }
+
