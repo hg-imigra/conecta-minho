@@ -42,3 +42,6 @@ yarn-error.*
 
 # Configuracoes locais do VS Code
 .vscode/
+
+# Local Netlify folder
+.netlify

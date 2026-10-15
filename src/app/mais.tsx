@@ -142,7 +142,6 @@ type NewsItem = {
   resumo: string;
   data: string;
   fonte: string;
-  link?: string;
 };
 
 type Anuncio = {
@@ -805,87 +804,33 @@ export default function MaisScreen() {
     setErroNoticias('');
 
     try {
-      const cidadesParaCarregar = cidadeSolicitada
-        ? [cidadeSolicitada]
-        : REGIOES;
+      const cidadesParaCarregar = cidadeSolicitada ? [cidadeSolicitada] : REGIOES;
+      const resultados = await Promise.all(cidadesParaCarregar.map(async (cidade) => {
+        // A função Netlify consulta o Google News e fontes locais alternativas no servidor,
+        // evitando os bloqueios CORS do navegador.
+        const endpoint = `/.netlify/functions/conecta-news?cidade=${encodeURIComponent(cidade)}`;
+        const resposta = await fetchComTimeout(endpoint, 12000);
+        if (!resposta.ok) throw new Error(`Conecta News HTTP ${resposta.status}`);
+        const dados = await resposta.json();
+        const itens: NewsItem[] = (Array.isArray(dados?.items) ? dados.items : []).slice(0, 12).map((item: any, index: number) => ({
+          id: `${cidade}-${index}-${String(item.title || 'noticia')}`,
+          titulo: decodeHtml(String(item.title || 'Notícia local')),
+          resumo: extrairResumo(String(item.description || item.content || '')),
+          data: formatarData(String(item.pubDate || item.published || '')),
+          fonte: decodeHtml(String(item.source || item.author || 'Notícia local')),
+        })).filter((item: NewsItem) => Boolean(item.titulo));
+        return { cidade, itens };
+      }));
 
-      const resultados = await Promise.all(
-        cidadesParaCarregar.map(async (cidade) => {
-          const rssUrl =
-            `https://news.google.com/rss/search?q=${encodeURIComponent(`${cidade} Portugal`)}&hl=pt-PT&gl=PT&ceid=PT:pt-150`;
-          const itensNormalizados = (itensOriginais: any[], fontePadrao: string): NewsItem[] =>
-            itensOriginais.slice(0, 8).map((item: any, index: number) => ({
-              id: `${cidade}-${index}-${String(item.title || item.titulo || 'noticia')}`,
-              titulo: decodeHtml(String(item.title || item.titulo || 'Notícia local')),
-              resumo: extrairResumo(String(item.description || item.content || item.resumo || '')),
-              data: formatarData(String(item.pubDate || item.published || item.data || '')),
-              fonte: decodeHtml(String(item.author || item.source || item.fonte || fontePadrao)),
-              link: String(item.link || item.url || ''),
-            })).filter((item: NewsItem) => Boolean(item.titulo));
-
-          // Tentativa 1: conversor RSS para JSON.
-          try {
-            const urlJson = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
-            const resposta = await fetchComTimeout(urlJson, 4500);
-            if (!resposta.ok) throw new Error(`RSS2JSON HTTP ${resposta.status}`);
-            const dados = await resposta.json();
-            if (dados?.status === 'ok' && Array.isArray(dados?.items) && dados.items.length) {
-              return { cidade, itens: itensNormalizados(dados.items, dados.feed?.title || 'Google News') };
-            }
-            throw new Error(dados?.message || 'RSS2JSON não devolveu notícias.');
-          } catch (erroJson) {
-            console.log(`Primeira fonte de notícias falhou para ${cidade}:`, erroJson);
-          }
-
-          // Tentativa 2: obter o RSS XML através de um proxy público alternativo.
-          const urlsAlternativos = [
-            `https://api.allorigins.win/raw?url=${encodeURIComponent(rssUrl)}`,
-            `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(rssUrl)}`,
-          ];
-
-          for (const urlAlternativo of urlsAlternativos) {
-            try {
-              const resposta = await fetchComTimeout(urlAlternativo, 4500);
-              if (!resposta.ok) throw new Error(`Proxy HTTP ${resposta.status}`);
-              const xml = await resposta.text();
-              const blocos = xml.match(/<item(?:\s[^>]*)?>[\s\S]*?<\/item>/gi) || [];
-              const itensXml = blocos.slice(0, 8).map((bloco, index) => ({
-                title: xmlTag(bloco, 'title'),
-                description: xmlTag(bloco, 'description'),
-                pubDate: xmlTag(bloco, 'pubDate'),
-                author: xmlTag(bloco, 'source') || 'Google News',
-                index,
-              })).filter((item) => Boolean(item.title));
-
-              if (itensXml.length) {
-                return { cidade, itens: itensNormalizados(itensXml, 'Google News') };
-              }
-              throw new Error('O RSS não contém notícias legíveis.');
-            } catch (erroProxy) {
-              console.log(`Fonte alternativa falhou para ${cidade}:`, erroProxy);
-            }
-          }
-
-          return { cidade, itens: [] as NewsItem[] };
-        })
-      );
-
-      const novoEstado: Record<Regiao, NewsItem[]> = {
-        ...noticias,
-      };
-      resultados.forEach((resultado) => {
-        novoEstado[resultado.cidade] = resultado.itens;
-      });
+      const novoEstado: Record<Regiao, NewsItem[]> = { ...noticias };
+      resultados.forEach((resultado) => { novoEstado[resultado.cidade] = resultado.itens; });
       setNoticias(novoEstado);
-
       if (resultados.every((resultado) => resultado.itens.length === 0)) {
-        throw new Error('As fontes de notícias não responderam. Tente novamente dentro de momentos.');
+        throw new Error('Não foram encontradas notícias locais agora. Tente novamente.');
       }
     } catch (error) {
       console.log('Erro ao carregar Conecta News:', error);
-      setErroNoticias(
-        'As fontes de notícias não responderam a tempo. Verifique a ligação à Internet e tente novamente dentro de momentos.'
-      );
+      setErroNoticias('Não foi possível carregar as notícias locais. Tente novamente dentro de momentos.');
     } finally {
       setCarregandoNoticias(false);
     }
@@ -3176,12 +3121,10 @@ export default function MaisScreen() {
                   regiaoNoticias
                 ].map(
                   (noticia) => (
-                    <TouchableOpacity
+                    <View
                       key={
                         noticia.id
                       }
-                      activeOpacity={noticia.link ? 0.82 : 1}
-                      onPress={() => noticia.link && abrirLink(noticia.link)}
                       style={
                         styles.newsCard
                       }
@@ -3231,7 +3174,7 @@ export default function MaisScreen() {
                           noticia.resumo
                         }
                       </Text>
-                    </TouchableOpacity>
+                    </View>
                   )
                 )}
               </ScrollView>
@@ -4553,26 +4496,26 @@ const styles =
     },
 
     content: {
-      paddingHorizontal: 20,
-      paddingTop: 26,
-      paddingBottom: 48,
+      paddingHorizontal: 18,
+      paddingTop: 22,
+      paddingBottom: 42,
       width: '100%',
-      maxWidth: 900,
+      maxWidth: 760,
       alignSelf: 'center',
     },
 
     /* HERO */
 
     hero: {
-      minHeight: 258,
-      borderRadius: 34,
-      backgroundColor: '#0B5F9B',
+      minHeight: 204,
+      borderRadius: 28,
+      backgroundColor: '#116EAD',
       overflow: 'hidden',
       position: 'relative',
-      marginBottom: 38,
-      paddingHorizontal: 32,
-      paddingTop: 32,
-      paddingBottom: 30,
+      marginBottom: 28,
+      paddingHorizontal: 24,
+      paddingTop: 24,
+      paddingBottom: 22,
       borderWidth: 1,
       borderColor: 'rgba(255,255,255,0.18)',
     },
@@ -4598,14 +4541,14 @@ const styles =
     },
 
     heroTextArea: {
-      width: '66%',
+      width: '64%',
       zIndex: 2,
     },
 
     heroTitle: {
       color: '#FFFFFF',
-      fontSize: 34,
-      lineHeight: 39,
+      fontSize: 30,
+      lineHeight: 35,
       fontWeight: '900',
       maxWidth: 290,
       letterSpacing: -0.5,
@@ -4613,8 +4556,8 @@ const styles =
 
     heroSubtitle: {
       color: '#EAF6FF',
-      fontSize: 17,
-      lineHeight: 24,
+      fontSize: 15.5,
+      lineHeight: 22,
       fontWeight: '600',
       marginTop: 8,
     },
@@ -4624,9 +4567,9 @@ const styles =
       maxWidth: 225,
       backgroundColor: '#FFFFFF',
       borderRadius: 18,
-      paddingHorizontal: 17,
-      paddingVertical: 11,
-      marginTop: 20,
+      paddingHorizontal: 14,
+      paddingVertical: 9,
+      marginTop: 16,
       shadowColor: '#063D68',
       shadowOpacity: 0.12,
       shadowRadius: 8,
@@ -4645,8 +4588,8 @@ const styles =
       position: 'absolute',
       right: 15,
       bottom: 13,
-      width: 158,
-      height: 148,
+      width: 142,
+      height: 132,
       zIndex: 1,
     },
 
@@ -4841,25 +4784,25 @@ const styles =
 
     quickCard: {
       width: '31.7%',
-      minHeight: 174,
+      minHeight: 146,
       backgroundColor: '#FFFFFF',
-      borderRadius: 24,
+      borderRadius: 21,
       borderWidth: 1,
-      borderColor: '#D7E4EE',
-      paddingHorizontal: 16,
-      paddingVertical: 17,
-      marginBottom: 16,
+      borderColor: '#DCE6EE',
+      paddingHorizontal: 13,
+      paddingVertical: 14,
+      marginBottom: 13,
       shadowColor: '#244B65',
-      shadowOpacity: 0.075,
-      shadowRadius: 11,
-      shadowOffset: { width: 0, height: 4 },
-      elevation: 2,
+      shadowOpacity: 0.035,
+      shadowRadius: 7,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 1,
     },
 
     quickIconBox: {
-      width: 50,
-      height: 50,
-      borderRadius: 17,
+      width: 46,
+      height: 46,
+      borderRadius: 15,
       backgroundColor: '#EAF4FB',
       alignItems: 'center',
       justifyContent: 'center',
@@ -4871,8 +4814,8 @@ const styles =
     },
 
     quickTitle: {
-      fontSize: 14,
-      lineHeight: 18,
+      fontSize: 13.5,
+      lineHeight: 17,
       fontWeight: '900',
       color: '#1F2A36',
     },
@@ -4896,11 +4839,11 @@ const styles =
 
     serviceCard: {
       width: '48.5%',
-      minHeight: 108,
-      borderRadius: 21,
+      minHeight: 91,
+      borderRadius: 17,
       borderWidth: 1,
-      padding: 13,
-      marginBottom: 13,
+      padding: 10,
+      marginBottom: 10,
       flexDirection: 'row',
       alignItems: 'center',
       position: 'relative',
@@ -5022,25 +4965,25 @@ const styles =
 
     regionCard: {
       width: '23.6%',
-      minHeight: 154,
+      minHeight: 126,
       backgroundColor: '#FFFFFF',
-      borderRadius: 25,
+      borderRadius: 20,
       borderWidth: 1,
       borderColor: '#DCE6EE',
       alignItems: 'center',
-      paddingHorizontal: 10,
-      paddingVertical: 16,
+      paddingHorizontal: 8,
+      paddingVertical: 13,
       shadowColor: '#244B65',
-      shadowOpacity: 0.065,
-      shadowRadius: 9,
-      shadowOffset: { width: 0, height: 3 },
-      elevation: 2,
+      shadowOpacity: 0.03,
+      shadowRadius: 6,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 1,
     },
 
     regionIconBox: {
-      width: 48,
-      height: 48,
-      borderRadius: 16,
+      width: 43,
+      height: 43,
+      borderRadius: 14,
       backgroundColor: '#EAF4FB',
       alignItems: 'center',
       justifyContent: 'center',
@@ -5052,16 +4995,16 @@ const styles =
     },
 
     regionTitle: {
-      fontSize: 12.5,
-      lineHeight: 17,
+      fontSize: 11.5,
+      lineHeight: 15,
       fontWeight: '900',
       color: '#27313D',
       textAlign: 'center',
     },
 
     regionDescription: {
-      fontSize: 10.5,
-      lineHeight: 14,
+      fontSize: 9.5,
+      lineHeight: 12,
       color: '#737D87',
       textAlign: 'center',
       marginTop: 3,
@@ -5220,19 +5163,19 @@ const styles =
     /* RODAPÉ */
 
     footer: {
-      minHeight: 112,
-      marginTop: 26,
+      minHeight: 96,
+      marginTop: 18,
       marginHorizontal: 0,
       marginBottom: 8,
-      backgroundColor: '#0E5E96',
+      backgroundColor: '#EAF5FC',
       overflow: 'hidden',
       position: 'relative',
       alignItems: 'center',
       justifyContent: 'center',
       borderRadius: 20,
       borderWidth: 1,
-      borderColor: '#0E5E96',
-      paddingVertical: 24,
+      borderColor: '#D5EAF7',
+      paddingVertical: 18,
     },
 
     footerWaveOne: {
@@ -5250,15 +5193,15 @@ const styles =
     },
 
     footerBrand: {
-      fontSize: 21,
+      fontSize: 18,
       fontWeight: '900',
-      letterSpacing: 0.25,
-      color: '#FFFFFF',
+      letterSpacing: 0.1,
+      color: '#164E75',
     },
 
     footerCities: {
-      fontSize: 13,
-      color: '#D9ECF8',
+      fontSize: 12,
+      color: '#55788F',
       marginTop: 5,
     },
 

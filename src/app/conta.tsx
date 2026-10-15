@@ -194,6 +194,12 @@ export default function ContaScreen() {
     session?.user?.email?.trim().toLowerCase() ===
     MASTER_EMAIL.toLowerCase();
 
+  useEffect(() => {
+    if (isMaster && !modoRecuperacao && !modoRedefinirPassword) {
+      router.replace('/admin');
+    }
+  }, [isMaster, modoRecuperacao, modoRedefinirPassword, router]);
+
   function lerTipoConta(user: any): TipoConta {
     const valor = user?.user_metadata?.tipo_conta;
 
@@ -912,6 +918,14 @@ export default function ContaScreen() {
           'Não foi possível iniciar a sessão.'
       );
 
+      return;
+    }
+
+    // MASTER entra na área administrativa e não recebe metadados de conta normal.
+    if (data.user.email?.trim().toLowerCase() === MASTER_EMAIL.toLowerCase()) {
+      setSession(data.session);
+      setLoading(false);
+      router.replace('/admin');
       return;
     }
 
