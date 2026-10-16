@@ -11,6 +11,8 @@ import {
 
   KeyboardAvoidingView,
 
+  Linking,
+
   Modal,
 
   Platform,
@@ -74,6 +76,14 @@ export default function AnuncioScreen() {
 
   const router = useRouter();
 
+  function voltarComSeguranca() {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/');
+    }
+  }
+
   const { width: larguraEcra } = useWindowDimensions();
 
   const { id } = useLocalSearchParams<{ id?: string }>();
@@ -87,6 +97,8 @@ export default function AnuncioScreen() {
   const [utilizadorId, setUtilizadorId] = useState<string | null>(null);
 
   const [modalOrcamento, setModalOrcamento] = useState(false);
+
+  const [modalContacto, setModalContacto] = useState(false);
 
   const [descricaoOrcamento, setDescricaoOrcamento] = useState('');
 
@@ -103,8 +115,6 @@ export default function AnuncioScreen() {
   const [jaAvaliei, setJaAvaliei] = useState(false);
 
   const [enviandoAvaliacao, setEnviandoAvaliacao] = useState(false);
-
-  const [fotoSelecionada, setFotoSelecionada] = useState(0);
 
   useEffect(() => {
 
@@ -165,17 +175,19 @@ export default function AnuncioScreen() {
       }
 
       const anuncioCarregado = data as Anuncio;
+      const tipoAnuncio = String(anuncioCarregado.tipo_anuncio || '').toLocaleLowerCase('pt-PT');
+      const dadosAnuncio = anuncioCarregado.dados_especificos || {};
+      if (Boolean(dadosAnuncio.submissao_prive) || tipoAnuncio.includes('adulto') || tipoAnuncio.includes('privé') || tipoAnuncio.includes('prive')) {
+        setErro('Este perfil pertence ao Conecta Privé e só pode ser consultado dentro da área Privé.');
+        setAnuncio(null);
+        return;
+      }
 
       setAnuncio(anuncioCarregado);
 
-      setFotoSelecionada(0);
-
       await carregarAvaliacoes(
-
-        anuncioCarregado.user_id,
-
+        anuncioCarregado.id,
         utilizador?.id ?? null
-
       );
 
     } catch (e: any) {
@@ -195,133 +207,91 @@ export default function AnuncioScreen() {
   }
 
   function formatarPreco() {
-
     if (!anuncio) return '';
 
-    if (anuncio.preco === null || anuncio.preco === undefined) {
+    // Alguns anúncios antigos guardaram o preço dentro de dados_especificos.
+    const dados = anuncio.dados_especificos ?? {};
+    const candidatos = [
+      anuncio.preco,
+      dados.preco,
+      dados.preco_valor,
+      dados.valor_preco,
+      dados.precoAnuncio,
+      dados.preco_anuncio,
+      dados.precoFinal,
+      dados.preco_final,
+      dados.valor_preco_anuncio,
+      dados.valor_servico,
+      dados.preco_servico,
+      dados.price,
+      dados.valor,
+    ];
+    const encontrado = candidatos.find((valor) =>
+      valor !== null && valor !== undefined && String(valor).trim() !== ''
+    );
 
-      return anuncio.preco_negociavel
-
-        ? 'Preço negociável'
-
-        : 'Preço sob consulta';
-
+    if (encontrado !== undefined) {
+      const textoNumerico = String(encontrado).trim().replace(/[^0-9,.-]/g, '');
+      const normalizado = textoNumerico.includes(',') && textoNumerico.includes('.')
+        ? textoNumerico.replace(/\./g, '').replace(',', '.')
+        : textoNumerico.replace(',', '.');
+      const numero = typeof encontrado === 'number' ? encontrado : Number(normalizado);
+      if (Number.isFinite(numero) && numero >= 0) {
+        const valor = numero.toLocaleString('pt-PT', {
+          style: 'currency',
+          currency: 'EUR',
+        });
+        return anuncio.preco_negociavel ? `${valor} · Negociável` : valor;
+      }
+      const texto = String(encontrado).trim();
+      if (texto && !/^sob consulta$/i.test(texto)) return texto;
     }
 
-    const valor = Number(anuncio.preco).toLocaleString('pt-PT', {
-
-      style: 'currency',
-
-      currency: 'EUR',
-
-    });
-
-    return anuncio.preco_negociavel
-
-      ? `${valor} · Negociável`
-
-      : valor;
-
+    if (anuncio.preco_negociavel) return 'Preço negociável';
+    return 'Preço sob consulta';
   }
 
   function contactar() {
-
-    if (!anuncio?.contato) {
-
-      Alert.alert(
-
-        'Contacto indisponível',
-
-        'Este anúncio não tem um contacto disponível.'
-
-      );
-
+    if (!anuncio?.contato?.trim()) {
+      setErro('Este anúncio não tem dados de contacto disponíveis.');
       return;
-
     }
-
-    Alert.alert(
-
-      'Contacto do anunciante',
-
-      `Contacto indicado no anúncio:\n\n${anuncio.contato}`
-
-    );
-
+    setErro('');
+    setModalContacto(true);
   }
 
   async function abrirMensagens() {
-
     if (!anuncio) return;
 
-    const { data, error } = await supabase.auth.getUser();
-
-    if (error || !data.user) {
-
-      Alert.alert(
-
-        'Inicia sessão',
-
-        'Tens de iniciar sessão para enviar mensagens.',
-
-        [
-
-          { text: 'Cancelar', style: 'cancel' },
-
-          {
-
-            text: 'Iniciar sessão',
-
-            onPress: () => router.push('/conta'),
-
-          },
-
-        ]
-
-      );
-
-      return;
-
+    try {
+      const { data, error } = await supabase.auth.getUser();
+      if (error) throw error;
+      if (!data.user) {
+        // Alert.alert não é apresentado de forma fiável na versão web.
+        router.push('/conta');
+        return;
+      }
+      if (data.user.id === anuncio.user_id) {
+        setErro('Este é o teu próprio anúncio. Não podes enviar uma mensagem para a tua própria conta.');
+        return;
+      }
+      router.push({
+        pathname: '/mensagens',
+        params: {
+          anuncioId: String(anuncio.id),
+          anuncioTitulo: String(anuncio.titulo || ''),
+          destinatarioId: String(anuncio.user_id),
+        },
+      });
+    } catch (e: any) {
+      console.error('Erro ao abrir mensagens:', e);
+      setErro(e?.message || 'Não foi possível abrir as mensagens. Tenta novamente.');
     }
-
-    if (data.user.id === anuncio.user_id) {
-
-      Alert.alert(
-
-        'O teu anúncio',
-
-        'Não podes enviar uma mensagem para a tua própria conta.'
-
-      );
-
-      return;
-
-    }
-
-    router.push({
-
-      pathname: '/mensagens',
-
-      params: {
-
-        anuncioId: anuncio.id,
-
-        anuncioTitulo: anuncio.titulo,
-
-        destinatarioId: anuncio.user_id,
-
-      },
-
-    });
-
   }
 
   async function carregarAvaliacoes(
-
-    vendedorId: string,
-
+    anuncioId: string,
     avaliadorId: string | null
-
   ) {
 
     setCarregandoAvaliacoes(true);
@@ -333,9 +303,7 @@ export default function AnuncioScreen() {
         .from('avaliacoes_publicas_vendedores')
 
         .select('id, nota, comentario, criado_em')
-
-        .eq('vendedor_id', vendedorId)
-
+        .eq('anuncio_id', anuncioId)
         .order('criado_em', { ascending: false });
 
       if (error) throw error;
@@ -349,9 +317,7 @@ export default function AnuncioScreen() {
           .from('avaliacoes_publicas_vendedores')
 
           .select('id')
-
-          .eq('vendedor_id', vendedorId)
-
+          .eq('anuncio_id', anuncioId)
           .eq('avaliador_id', avaliadorId)
 
           .maybeSingle();
@@ -440,7 +406,7 @@ export default function AnuncioScreen() {
 
         'Avaliação já enviada',
 
-        'Cada conta pode avaliar este anunciante apenas uma vez.'
+        'Cada conta pode avaliar este anúncio apenas uma vez.'
 
       );
 
@@ -471,9 +437,8 @@ export default function AnuncioScreen() {
         .from('avaliacoes_publicas_vendedores')
 
         .insert({
-
+          anuncio_id: anuncio.id,
           vendedor_id: anuncio.user_id,
-
           avaliador_id: utilizadorId,
 
           nota: minhaNota,
@@ -504,7 +469,7 @@ export default function AnuncioScreen() {
 
       setMeuComentario('');
 
-      await carregarAvaliacoes(anuncio.user_id, utilizadorId);
+      await carregarAvaliacoes(anuncio.id, utilizadorId);
 
       Alert.alert(
 
@@ -752,7 +717,7 @@ export default function AnuncioScreen() {
 
           style={styles.primaryButton}
 
-          onPress={() => router.back()}
+          onPress={voltarComSeguranca}
 
           activeOpacity={0.85}
 
@@ -837,13 +802,12 @@ export default function AnuncioScreen() {
   );
 
   const formatarNomeCampo = (chave: string) =>
-
     chave
-
-      .replace(/_/g, ' ')
-
+      .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+      .replace(/[_-]+/g, ' ')
       .replace(/([a-z])([A-Z])/g, '$1 $2')
-
+      .replace(/\s+/g, ' ')
+      .trim()
       .replace(/^./, (letra) => letra.toUpperCase());
 
   const formatarValorCampo = (valor: unknown) => {
@@ -855,28 +819,6 @@ export default function AnuncioScreen() {
     return String(valor).trim();
 
   };
-
-  const nomeAnunciante = String(
-
-    dadosEspecificos.nome_profissional ||
-
-      dadosEspecificos.nome_negocio ||
-
-      'Anunciante Conecta'
-
-  );
-
-  const mediaAvaliacoes = avaliacoes.length
-
-    ? avaliacoes.reduce(
-
-        (total, item) => total + Number(item.nota),
-
-        0
-
-      ) / avaliacoes.length
-
-    : 0;
 
   return (
 
@@ -890,35 +832,23 @@ export default function AnuncioScreen() {
 
       >
 
-        <View style={styles.topBar}>
+        <TouchableOpacity
 
-          <TouchableOpacity
+          style={styles.backButton}
 
-            style={styles.backButton}
+          onPress={voltarComSeguranca}
 
-            onPress={() => router.back()}
+          activeOpacity={0.7}
 
-            activeOpacity={0.7}
+        >
 
-          >
+          <Text style={styles.backButtonText}>
 
-            <Text style={styles.backButtonText}>
+            ‹  Voltar aos anúncios
 
-              ‹  Voltar aos anúncios
+          </Text>
 
-            </Text>
-
-          </TouchableOpacity>
-
-          <View style={styles.topActions}>
-
-            <Text style={styles.topActionIcon}>♡</Text>
-
-            <Text style={styles.topActionIcon}>↗</Text>
-
-          </View>
-
-        </View>
+        </TouchableOpacity>
 
         <View style={styles.card}>
 
@@ -936,95 +866,51 @@ export default function AnuncioScreen() {
 
             <View style={styles.galleryContainer}>
 
-              <View style={styles.mainPhotoWrap}>
+              <ScrollView
 
-                <Image
+                horizontal
 
-                  source={{
+                pagingEnabled
 
-                    uri: imagensAnuncio[
+                showsHorizontalScrollIndicator={false}
 
-                      Math.min(
+                style={styles.gallery}
 
-                        fotoSelecionada,
+              >
 
-                        imagensAnuncio.length - 1
+                {imagensAnuncio.map((url, indice) => (
 
-                      )
+                  <Image
 
-                    ],
+                    key={`${url}-${indice}`}
 
-                  }}
+                    source={{ uri: url }}
 
-                  style={styles.galleryImage}
+                    style={[
 
-                  resizeMode="cover"
+                      styles.galleryImage,
 
-                  accessibilityLabel={`Fotografia ${fotoSelecionada + 1} do anúncio`}
+                      { width: Math.min(Math.max(260, larguraEcra - 76), 980) },
 
-                />
+                    ]}
 
-                <View style={styles.photoCounter}>
+                    resizeMode="cover"
 
-                  <Text style={styles.photoCounterText}>
+                    accessibilityLabel={`Fotografia ${indice + 1} do anúncio`}
 
-                    {fotoSelecionada + 1}/{imagensAnuncio.length}
+                  />
 
-                  </Text>
+                ))}
 
-                </View>
-
-              </View>
+              </ScrollView>
 
               {imagensAnuncio.length > 1 ? (
 
-                <ScrollView
+                <Text style={styles.galleryHint}>
 
-                  horizontal
+                  Desliza para ver as {imagensAnuncio.length} fotografias
 
-                  showsHorizontalScrollIndicator={false}
-
-                  contentContainerStyle={styles.thumbnailList}
-
-                >
-
-                  {imagensAnuncio.map((url, indice) => (
-
-                    <TouchableOpacity
-
-                      key={`${url}-${indice}`}
-
-                      onPress={() => setFotoSelecionada(indice)}
-
-                      activeOpacity={0.8}
-
-                      style={[
-
-                        styles.thumbnailButton,
-
-                        fotoSelecionada === indice &&
-
-                          styles.thumbnailSelected,
-
-                      ]}
-
-                    >
-
-                      <Image
-
-                        source={{ uri: url }}
-
-                        style={styles.thumbnailImage}
-
-                        resizeMode="cover"
-
-                      />
-
-                    </TouchableOpacity>
-
-                  ))}
-
-                </ScrollView>
+                </Text>
 
               ) : null}
 
@@ -1034,7 +920,7 @@ export default function AnuncioScreen() {
 
             <View style={styles.noImageBox}>
 
-              <Text style={styles.noImageIcon}>🖼️</Text>
+              <Text style={styles.noImageIcon}>▧</Text>
 
               <Text style={styles.noImageText}>
 
@@ -1048,99 +934,55 @@ export default function AnuncioScreen() {
 
           <Text style={styles.title}>{anuncio.titulo}</Text>
 
+          {dadosEspecificos.nome_profissional ||
+
+          dadosEspecificos.nome_negocio ? (
+
+            <Text style={styles.businessName}>
+
+              {String(
+
+                dadosEspecificos.nome_profissional ||
+
+                  dadosEspecificos.nome_negocio
+
+              )}
+
+            </Text>
+
+          ) : null}
+
           {anuncio.categoria ? (
 
             <Text style={styles.category}>{anuncio.categoria}</Text>
 
           ) : null}
 
-          <View style={styles.locationPriceRow}>
+          {anuncio.localidade ? (
 
-            {anuncio.localidade ? (
+            <View style={styles.locationBox}>
 
-              <View style={[styles.locationBox, styles.halfInfoBox]}>
+              <Text style={styles.locationPin}>⌖</Text>
 
-                <Text style={styles.locationPin}>📍</Text>
+              <View style={styles.locationTextGroup}>
 
-                <View style={styles.locationTextGroup}>
+                <Text style={styles.infoLabel}>LOCALIDADE</Text>
 
-                  <Text style={styles.infoLabel}>LOCALIDADE</Text>
-
-                  <Text style={styles.infoValue}>
-
-                    {anuncio.localidade}
-
-                  </Text>
-
-                </View>
+                <Text style={styles.infoValue}>{anuncio.localidade}</Text>
 
               </View>
-
-            ) : null}
-
-            <View style={[styles.priceBox, styles.halfInfoBox]}>
-
-              <Text style={styles.infoLabel}>PREÇO</Text>
-
-              <Text style={styles.price}>{formatarPreco()}</Text>
-
-            </View>
-
-          </View>
-
-          {camposVisiveis.length > 0 ? (
-
-            <View style={styles.quickDetails}>
-
-              {camposVisiveis.slice(0, 4).map(([chave, valor]) => (
-
-                <View key={chave} style={styles.quickDetail}>
-
-                  <Text style={styles.quickDetailIcon}>
-
-                    {/marca/i.test(chave)
-
-                      ? '🏷️'
-
-                      : /modelo/i.test(chave)
-
-                        ? '🚘'
-
-                        : /tempo|ano|data/i.test(chave)
-
-                          ? '📅'
-
-                          : /estado|condição/i.test(chave)
-
-                            ? '☆'
-
-                            : '📋'}
-
-                  </Text>
-
-                  <View style={styles.quickDetailText}>
-
-                    <Text style={styles.quickDetailLabel}>
-
-                      {formatarNomeCampo(chave)}
-
-                    </Text>
-
-                    <Text style={styles.quickDetailValue}>
-
-                      {formatarValorCampo(valor)}
-
-                    </Text>
-
-                  </View>
-
-                </View>
-
-              ))}
 
             </View>
 
           ) : null}
+
+          <View style={styles.priceBox}>
+
+            <Text style={styles.infoLabel}>PREÇO</Text>
+
+            <Text style={styles.price}>{formatarPreco()}</Text>
+
+          </View>
 
           {anuncio.descricao ? (
 
@@ -1148,7 +990,7 @@ export default function AnuncioScreen() {
 
               <Text style={styles.sectionHeading}>
 
-                📄  Sobre este anúncio
+                Sobre este anúncio
 
               </Text>
 
@@ -1168,35 +1010,13 @@ export default function AnuncioScreen() {
 
               <Text style={styles.sectionHeading}>
 
-                📄  Detalhes do produto
+                Detalhes do anúncio
 
               </Text>
 
               {camposVisiveis.map(([chave, valor]) => (
 
                 <View key={chave} style={styles.detailRow}>
-
-                  <Text style={styles.detailIcon}>
-
-                    {/marca/i.test(chave)
-
-                      ? '🏷️'
-
-                      : /modelo/i.test(chave)
-
-                        ? '🚘'
-
-                        : /tempo|ano|data/i.test(chave)
-
-                          ? '📅'
-
-                          : /estado|condição/i.test(chave)
-
-                            ? '☆'
-
-                            : '📋'}
-
-                  </Text>
 
                   <Text style={styles.detailLabel}>
 
@@ -1218,129 +1038,13 @@ export default function AnuncioScreen() {
 
           ) : null}
 
-          <View style={styles.sellerCard}>
-
-            <View style={styles.sellerHeader}>
-
-              <View style={styles.sellerAvatar}>
-
-                <Text style={styles.sellerAvatarText}>
-
-                  {nomeAnunciante.trim().charAt(0).toUpperCase()}
-
-                </Text>
-
-              </View>
-
-              <View style={styles.sellerIdentity}>
-
-                <Text style={styles.sellerName}>{nomeAnunciante}</Text>
-
-                <Text style={styles.sellerSubtitle}>
-
-                  Perfil do anunciante no Conecta
-
-                </Text>
-
-              </View>
-
-              <Text style={styles.sellerChevron}>›</Text>
-
-            </View>
-
-            <View style={styles.sellerStats}>
-
-              <View style={styles.sellerStat}>
-
-                <Text style={styles.sellerStatIcon}>☆</Text>
-
-                <View>
-
-                  <Text style={styles.sellerStatValue}>
-
-                    {mediaAvaliacoes
-
-                      ? mediaAvaliacoes.toFixed(1).replace('.', ',')
-
-                      : '—'}
-
-                  </Text>
-
-                  <Text style={styles.sellerStatLabel}>
-
-                    {avaliacoes.length}{' '}
-
-                    {avaliacoes.length === 1
-
-                      ? 'avaliação'
-
-                      : 'avaliações'}
-
-                  </Text>
-
-                </View>
-
-              </View>
-
-              <View style={styles.sellerStat}>
-
-                <Text style={styles.sellerStatIcon}>📄</Text>
-
-                <View>
-
-                  <Text style={styles.sellerStatValue}>
-
-                    Conecta
-
-                  </Text>
-
-                  <Text style={styles.sellerStatLabel}>
-
-                    anunciante
-
-                  </Text>
-
-                </View>
-
-              </View>
-
-            </View>
-
-            <TouchableOpacity
-
-              style={styles.sellerAdsButton}
-
-              onPress={() =>
-
-                router.push({
-
-                  pathname: '/anuncios-anunciante' as any,
-
-                  params: { userId: anuncio.user_id, nome: nomeAnunciante },
-
-                })
-
-              }
-
-              activeOpacity={0.82}
-
-            >
-
-              <Text style={styles.sellerAdsButtonText}>
-
-                Ver todos os anúncios deste anunciante  ›
-
-              </Text>
-
-            </TouchableOpacity>
-
-          </View>
+          {erro ? <View style={styles.warningBox}><Text style={styles.warningText}>{erro}</Text></View> : null}
 
           <View style={styles.actionsSection}>
 
             <Text style={styles.actionsTitle}>
 
-              ✨  Interessado neste anúncio?
+              Interessado neste anúncio?
 
             </Text>
 
@@ -1360,7 +1064,7 @@ export default function AnuncioScreen() {
 
             >
 
-              <Text style={styles.contactButtonIcon}>☎️</Text>
+              <Text style={styles.contactButtonIcon}>☎</Text>
 
               <View style={styles.buttonTextGroup}>
 
@@ -1392,7 +1096,7 @@ export default function AnuncioScreen() {
 
             >
 
-              <Text style={styles.messageButtonIcon}>💬</Text>
+              <Text style={styles.messageButtonIcon}>✉</Text>
 
               <View style={styles.buttonTextGroup}>
 
@@ -1430,7 +1134,7 @@ export default function AnuncioScreen() {
 
             >
 
-              <Text style={styles.quoteButtonIcon}>📄</Text>
+              <Text style={styles.quoteButtonIcon}>☷</Text>
 
               <View style={styles.buttonTextGroup}>
 
@@ -1460,15 +1164,13 @@ export default function AnuncioScreen() {
 
             <Text style={styles.reviewsTitle}>
 
-              ☆  Avaliações do anunciante
+              Avaliações deste anúncio
 
             </Text>
 
             <Text style={styles.reviewsSubtitle}>
 
-              Consulta as opiniões da comunidade e ajuda outras pessoas
-
-              a escolher com mais confiança.
+              Consulta as opiniões da comunidade sobre este anúncio específico.
 
             </Text>
 
@@ -1478,7 +1180,21 @@ export default function AnuncioScreen() {
 
                 {avaliacoes.length
 
-                  ? mediaAvaliacoes.toFixed(1).replace('.', ',')
+                  ? (
+
+                      avaliacoes.reduce(
+
+                        (total, item) => total + Number(item.nota),
+
+                        0
+
+                      ) / avaliacoes.length
+
+                    )
+
+                      .toFixed(1)
+
+                      .replace('.', ',')
 
                   : '—'}
 
@@ -1490,9 +1206,39 @@ export default function AnuncioScreen() {
 
                   {avaliacoes.length
 
-                    ? '★'.repeat(Math.round(mediaAvaliacoes)) +
+                    ? '★'.repeat(
 
-                      '☆'.repeat(5 - Math.round(mediaAvaliacoes))
+                        Math.round(
+
+                          avaliacoes.reduce(
+
+                            (total, item) => total + Number(item.nota),
+
+                            0
+
+                          ) / avaliacoes.length
+
+                        )
+
+                      ) +
+
+                      '☆'.repeat(
+
+                        5 -
+
+                          Math.round(
+
+                            avaliacoes.reduce(
+
+                              (total, item) => total + Number(item.nota),
+
+                              0
+
+                            ) / avaliacoes.length
+
+                          )
+
+                      )
 
                     : '☆☆☆☆☆'}
 
@@ -1678,29 +1424,13 @@ export default function AnuncioScreen() {
 
             ) : null}
 
-            {jaAvaliei ? (
+            {!eProprietario && jaAvaliei ? (
 
               <View style={styles.reviewAlreadyBox}>
 
                 <Text style={styles.reviewAlreadyText}>
 
-                  Já enviaste uma avaliação a este anunciante.
-
-                </Text>
-
-              </View>
-
-            ) : null}
-
-            {!carregandoAvaliacoes && avaliacoes.length === 0 ? (
-
-              <View style={styles.noReviewsBox}>
-
-                <Text style={styles.noReviewsIcon}>💬</Text>
-
-                <Text style={styles.noReviewsText}>
-
-                  Ainda não existem avaliações para este anunciante.
+                  ✓ Já enviaste uma avaliação a este anunciante.
 
                 </Text>
 
@@ -1712,79 +1442,114 @@ export default function AnuncioScreen() {
 
               <ActivityIndicator
 
-                size="small"
-
                 color="#1677B8"
 
-                style={styles.reviewsLoading}
+                style={{ marginVertical: 18 }}
 
               />
 
-            ) : null}
+            ) : avaliacoes.length === 0 ? (
 
-            {avaliacoes.map((avaliacao) => (
+              <Text style={styles.noReviewsText}>
 
-              <View key={avaliacao.id} style={styles.reviewCard}>
+                Ainda não existem avaliações para este anunciante.
 
-                <View style={styles.reviewCardHeader}>
+              </Text>
 
-                  <Text style={styles.reviewStars}>
+            ) : (
 
-                    {'★'.repeat(avaliacao.nota)}
+              avaliacoes.map((avaliacao) => (
 
-                    {'☆'.repeat(5 - avaliacao.nota)}
+                <View key={avaliacao.id} style={styles.reviewCard}>
+
+                  <View style={styles.reviewCardHeader}>
+
+                    <Text style={styles.reviewStars}>
+
+                      {'★'.repeat(Number(avaliacao.nota))}
+
+                      {'☆'.repeat(5 - Number(avaliacao.nota))}
+
+                    </Text>
+
+                    <Text style={styles.reviewDate}>
+
+                      {dataAvaliacao(avaliacao.criado_em)}
+
+                    </Text>
+
+                  </View>
+
+                  <Text style={styles.reviewAuthor}>
+
+                    Utilizador Conecta
 
                   </Text>
 
-                  <Text style={styles.reviewDate}>
+                  {avaliacao.comentario ? (
 
-                    {dataAvaliacao(avaliacao.criado_em)}
+                    <Text style={styles.reviewComment}>
 
-                  </Text>
+                      {avaliacao.comentario}
+
+                    </Text>
+
+                  ) : (
+
+                    <Text style={styles.reviewNoComment}>
+
+                      Sem comentário escrito.
+
+                    </Text>
+
+                  )}
 
                 </View>
 
-                {avaliacao.comentario ? (
+              ))
 
-                  <Text style={styles.reviewComment}>
-
-                    {avaliacao.comentario}
-
-                  </Text>
-
-                ) : null}
-
-              </View>
-
-            ))}
-
-          </View>
-
-          <View style={styles.safePurchase}>
-
-            <Text style={styles.safePurchaseIcon}>🛡️</Text>
-
-            <View style={styles.safePurchaseTextGroup}>
-
-              <Text style={styles.safePurchaseTitle}>
-
-                Compra segura
-
-              </Text>
-
-              <Text style={styles.safePurchaseText}>
-
-                Comunica sempre através do Conecta e evita pagamentos antecipados.
-
-              </Text>
-
-            </View>
+            )}
 
           </View>
 
         </View>
 
       </ScrollView>
+
+      <Modal
+        visible={modalContacto}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setModalContacto(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Contacto do anunciante</Text>
+            <Text style={styles.modalSubtitle}>Dados de contacto fornecidos neste anúncio</Text>
+            <Text selectable style={styles.contactValue}>{anuncio?.contato || 'Contacto indisponível'}</Text>
+            <TouchableOpacity
+              style={styles.primaryButton}
+              activeOpacity={0.8}
+              onPress={() => {
+                const contacto = String(anuncio?.contato || '').trim();
+                const telefone = contacto.replace(/[^+0-9]/g, '');
+                if (telefone.length >= 6) {
+                  Linking.openURL(`tel:${telefone}`).catch(() => setErro('Não foi possível abrir a aplicação de chamadas.'));
+                } else if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contacto)) {
+                  Linking.openURL(`mailto:${contacto}`).catch(() => setErro('Não foi possível abrir a aplicação de e-mail.'));
+                } else {
+                  setErro('O contacto foi apresentado acima. Copia-o para o utilizar.');
+                }
+              }}
+            >
+              <Text style={styles.primaryButtonText}>Utilizar contacto</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelButton} onPress={() => setModalContacto(false)}>
+              <Text style={styles.cancelButtonText}>Fechar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
 
@@ -1794,7 +1559,11 @@ export default function AnuncioScreen() {
 
         animationType="slide"
 
-        onRequestClose={() => setModalOrcamento(false)}
+        onRequestClose={() => {
+
+          if (!enviandoOrcamento) setModalOrcamento(false);
+
+        }}
 
       >
 
@@ -1812,7 +1581,13 @@ export default function AnuncioScreen() {
 
             <Text style={styles.modalSubtitle}>
 
-              Explica ao anunciante aquilo de que precisas.
+              Anúncio: {anuncio.titulo}
+
+            </Text>
+
+            <Text style={styles.fieldLabel}>
+
+              Descreve o serviço que pretendes
 
             </Text>
 
@@ -1824,17 +1599,25 @@ export default function AnuncioScreen() {
 
               onChangeText={setDescricaoOrcamento}
 
-              placeholder="Descreve o teu pedido..."
+              placeholder="Explica o que precisas e indica os detalhes relevantes..."
 
               placeholderTextColor="#89939E"
 
               multiline
+
+              maxLength={2000}
 
               textAlignVertical="top"
 
               editable={!enviandoOrcamento}
 
             />
+
+            <Text style={styles.characterCount}>
+
+              {descricaoOrcamento.length}/2000
+
+            </Text>
 
             <TouchableOpacity
 
@@ -1862,7 +1645,7 @@ export default function AnuncioScreen() {
 
                 <Text style={styles.primaryButtonText}>
 
-                  Enviar pedido
+                  Enviar pedido de orçamento
 
                 </Text>
 
@@ -1878,7 +1661,7 @@ export default function AnuncioScreen() {
 
               disabled={enviandoOrcamento}
 
-              activeOpacity={0.82}
+              activeOpacity={0.7}
 
             >
 
@@ -1904,17 +1687,15 @@ const styles = StyleSheet.create({
 
     flex: 1,
 
-    backgroundColor: '#F1F6FB',
+    backgroundColor: '#F5F8FC',
 
   },
 
   content: {
 
-    paddingHorizontal: 14,
+    padding: 18,
 
-    paddingTop: 12,
-
-    paddingBottom: 30,
+    paddingBottom: 40,
 
   },
 
@@ -1922,13 +1703,13 @@ const styles = StyleSheet.create({
 
     flex: 1,
 
+    backgroundColor: '#F5F8FC',
+
     alignItems: 'center',
 
     justifyContent: 'center',
 
     padding: 24,
-
-    backgroundColor: '#F1F6FB',
 
   },
 
@@ -1970,21 +1751,11 @@ const styles = StyleSheet.create({
 
   },
 
-  topBar: {
-
-    flexDirection: 'row',
-
-    alignItems: 'center',
-
-    justifyContent: 'space-between',
-
-    marginBottom: 10,
-
-  },
-
   backButton: {
 
     alignSelf: 'flex-start',
+
+    marginBottom: 14,
 
     paddingVertical: 8,
 
@@ -2002,145 +1773,65 @@ const styles = StyleSheet.create({
 
   },
 
-  topActions: {
-
-    flexDirection: 'row',
-
-    alignItems: 'center',
-
-    gap: 16,
-
-  },
-
-  topActionIcon: {
-
-    color: '#344A62',
-
-    fontSize: 27,
-
-    fontWeight: '500',
-
-  },
-
   card: {
 
     backgroundColor: '#FFFFFF',
 
-    borderRadius: 26,
+    borderRadius: 22,
 
-    padding: 16,
+    padding: 20,
 
     borderWidth: 1,
 
-    borderColor: '#E8EDF3',
+    borderColor: '#E5EAF0',
 
-    shadowColor: '#102A43',
+    shadowColor: '#1D2733',
 
-    shadowOffset: { width: 0, height: 8 },
+    shadowOffset: { width: 0, height: 5 },
 
-    shadowOpacity: 0.07,
+    shadowOpacity: 0.045,
 
-    shadowRadius: 18,
+    shadowRadius: 12,
 
-    elevation: 4,
+    elevation: 2,
 
   },
 
   galleryContainer: {
 
-    marginHorizontal: -2,
+    marginHorizontal: -4,
 
     marginBottom: 18,
 
   },
 
-  mainPhotoWrap: {
+  gallery: {
 
-    position: 'relative',
-
-    borderRadius: 22,
-
-    overflow: 'hidden',
+    width: '100%',
 
   },
 
   galleryImage: {
 
-    width: '100%',
+    height: 340,
 
-    height: 300,
+    borderRadius: 18,
 
-    borderRadius: 22,
+    marginRight: 10,
 
     backgroundColor: '#E8EDF2',
 
   },
 
-  photoCounter: {
+  galleryHint: {
 
-    position: 'absolute',
+    color: '#718091',
 
-    right: 12,
+    fontSize: 12,
 
-    bottom: 12,
+    textAlign: 'center',
 
-    backgroundColor: 'rgba(20,30,40,0.72)',
-
-    borderRadius: 18,
-
-    paddingHorizontal: 12,
-
-    paddingVertical: 6,
-
-  },
-
-  photoCounterText: {
-
-    color: '#FFFFFF',
-
-    fontWeight: '800',
-
-    fontSize: 13,
-
-  },
-
-  thumbnailList: {
-
-    paddingTop: 9,
-
-    paddingBottom: 2,
-
-    gap: 8,
-
-  },
-
-  thumbnailButton: {
-
-    width: 92,
-
-    height: 76,
-
-    borderRadius: 13,
-
-    borderWidth: 2,
-
-    borderColor: '#E5EAF0',
-
-    overflow: 'hidden',
-
-  },
-
-  thumbnailSelected: {
-
-    borderColor: '#0785E5',
-
-  },
-
-  thumbnailImage: {
-
-    width: '100%',
-
-    height: '100%',
+    marginTop: 8,
 
   },
 
@@ -2184,6 +1875,20 @@ const styles = StyleSheet.create({
 
   },
 
+  businessName: {
+
+    color: '#177DBA',
+
+    fontSize: 17,
+
+    fontWeight: '800',
+
+    marginTop: 6,
+
+    marginBottom: 8,
+
+  },
+
   typeBadge: {
 
     alignSelf: 'flex-start',
@@ -2216,15 +1921,15 @@ const styles = StyleSheet.create({
 
   title: {
 
-    fontSize: 29,
+    fontSize: 27,
 
-    lineHeight: 36,
+    lineHeight: 34,
 
     fontWeight: '800',
 
-    color: '#102A43',
+    color: '#172433',
 
-    marginBottom: 10,
+    marginBottom: 8,
 
   },
 
@@ -2238,39 +1943,17 @@ const styles = StyleSheet.create({
 
   },
 
-  locationPriceRow: {
-
-    flexDirection: 'row',
-
-    alignItems: 'stretch',
-
-    gap: 10,
-
-    marginTop: 14,
-
-  },
-
-  halfInfoBox: {
-
-    flex: 1,
-
-    marginTop: 0,
-
-    minWidth: 0,
-
-  },
-
   locationBox: {
 
     flexDirection: 'row',
 
     alignItems: 'center',
 
-    backgroundColor: '#F3F7FC',
+    backgroundColor: '#F8FAFC',
 
-    borderRadius: 16,
+    borderRadius: 14,
 
-    padding: 13,
+    padding: 14,
 
     marginTop: 16,
 
@@ -2278,11 +1961,11 @@ const styles = StyleSheet.create({
 
   locationPin: {
 
-    fontSize: 21,
+    fontSize: 24,
 
     color: '#1677B8',
 
-    marginRight: 9,
+    marginRight: 12,
 
   },
 
@@ -2318,107 +2001,23 @@ const styles = StyleSheet.create({
 
   priceBox: {
 
-    backgroundColor: '#EAF4FF',
+    backgroundColor: '#F0F7FC',
 
     borderRadius: 16,
 
-    padding: 13,
+    padding: 16,
 
-    marginTop: 16,
-
-    borderWidth: 1,
-
-    borderColor: '#D9EAFE',
+    marginTop: 14,
 
   },
 
   price: {
 
-    fontSize: 24,
-
-    fontWeight: '900',
-
-    color: '#075985',
-
-  },
-
-  quickDetails: {
-
-    flexDirection: 'row',
-
-    flexWrap: 'wrap',
-
-    marginTop: 18,
-
-    marginBottom: 6,
-
-    gap: 8,
-
-  },
-
-  quickDetail: {
-
-    width: '48%',
-
-    flexDirection: 'row',
-
-    alignItems: 'flex-start',
-
-    paddingVertical: 10,
-
-    paddingHorizontal: 4,
-
-  },
-
-  quickDetailIcon: {
-
-    width: 28,
-
-    fontSize: 20,
-
-    color: '#344A62',
-
-  },
-
-  quickDetailText: {
-
-    flex: 1,
-
-  },
-
-  quickDetailLabel: {
-
-    color: '#718091',
-
-    fontSize: 12,
-
-    marginBottom: 5,
-
-  },
-
-  quickDetailValue: {
-
-    color: '#102A43',
-
-    fontSize: 14,
+    fontSize: 28,
 
     fontWeight: '800',
 
-  },
-
-  descriptionCard: {
-
-    backgroundColor: '#F5F8FC',
-
-    borderRadius: 18,
-
-    padding: 18,
-
-    marginTop: 20,
-
-    borderWidth: 1,
-
-    borderColor: '#E8EDF3',
+    color: '#1677B8',
 
   },
 
@@ -2431,6 +2030,18 @@ const styles = StyleSheet.create({
     fontWeight: '800',
 
     marginBottom: 12,
+
+  },
+
+  descriptionCard: {
+
+    backgroundColor: '#F8FAFC',
+
+    borderRadius: 16,
+
+    padding: 16,
+
+    marginTop: 22,
 
   },
 
@@ -2450,17 +2061,15 @@ const styles = StyleSheet.create({
 
     borderWidth: 1,
 
-    borderColor: '#E6ECF2',
+    borderColor: '#E5EAF0',
 
-    borderRadius: 20,
+    borderRadius: 16,
 
-    paddingHorizontal: 16,
+    paddingHorizontal: 15,
 
-    paddingTop: 20,
+    paddingTop: 16,
 
-    paddingBottom: 6,
-
-    backgroundColor: '#FFFFFF',
+    paddingBottom: 4,
 
   },
 
@@ -2470,27 +2079,15 @@ const styles = StyleSheet.create({
 
     justifyContent: 'space-between',
 
-    alignItems: 'center',
+    alignItems: 'flex-start',
+
+    paddingVertical: 12,
 
     borderTopWidth: 1,
 
-    borderTopColor: '#E8EDF3',
+    borderTopColor: '#EDF0F3',
 
-    paddingVertical: 14,
-
-  },
-
-  detailIcon: {
-
-    width: 30,
-
-    color: '#344A62',
-
-    fontSize: 20,
-
-    fontWeight: '700',
-
-    marginRight: 8,
+    gap: 12,
 
   },
 
@@ -2498,271 +2095,63 @@ const styles = StyleSheet.create({
 
     flex: 1,
 
-    fontSize: 14,
-
     color: '#718091',
+
+    fontSize: 13,
+
+    fontWeight: '600',
+
+    textTransform: 'capitalize',
 
   },
 
   detailValue: {
 
-    flex: 1,
+    flex: 1.2,
+
+    color: '#243445',
 
     fontSize: 14,
 
-    color: '#102A43',
-
-    fontWeight: '800',
+    fontWeight: '700',
 
     textAlign: 'right',
 
   },
 
-  sellerCard: {
-
-    marginTop: 22,
-
-    marginBottom: 6,
-
-    padding: 16,
-
-    borderRadius: 22,
-
-    borderWidth: 1,
-
-    borderColor: '#E7EDF4',
-
-    backgroundColor: '#FFFFFF',
-
-  },
-
-  sellerHeader: {
-
-    flexDirection: 'row',
-
-    alignItems: 'center',
-
-    marginBottom: 15,
-
-  },
-
-  sellerAvatar: {
-
-    width: 56,
-
-    height: 56,
-
-    borderRadius: 28,
-
-    backgroundColor: '#E1F1FF',
-
-    alignItems: 'center',
-
-    justifyContent: 'center',
-
-    marginRight: 12,
-
-  },
-
-  sellerAvatarText: {
-
-    color: '#0878C9',
-
-    fontSize: 20,
-
-    fontWeight: '900',
-
-  },
-
-  sellerIdentity: {
-
-    flex: 1,
-
-  },
-
-  sellerName: {
-
-    color: '#102A43',
-
-    fontSize: 17,
-
-    fontWeight: '900',
-
-  },
-
-  sellerSubtitle: {
-
-    color: '#718091',
-
-    fontSize: 13,
-
-    marginTop: 4,
-
-  },
-
-  sellerChevron: {
-
-    color: '#40556D',
-
-    fontSize: 30,
-
-    paddingLeft: 8,
-
-  },
-
-  sellerAdsButton: {
-
-    marginTop: 14,
-
-    paddingVertical: 13,
-
-    paddingHorizontal: 14,
-
-    borderRadius: 13,
-
-    backgroundColor: '#EAF4FC',
-
-    borderWidth: 1,
-
-    borderColor: '#CFE5F8',
-
-    alignItems: 'center',
-
-  },
-
-  sellerAdsButtonText: {
-
-    color: '#0879C9',
-
-    fontSize: 14,
-
-    fontWeight: '900',
-
-    textAlign: 'center',
-
-  },
-
-  sellerStats: {
-
-    flexDirection: 'row',
-
-    gap: 8,
-
-  },
-
-  sellerStat: {
-
-    flex: 1,
-
-    flexDirection: 'row',
-
-    alignItems: 'center',
-
-    borderWidth: 1,
-
-    borderColor: '#E6EDF4',
-
-    borderRadius: 14,
-
-    padding: 9,
-
-    gap: 7,
-
-  },
-
-  sellerStatIcon: {
-
-    color: '#E6A100',
-
-    fontSize: 23,
-
-    fontWeight: '800',
-
-  },
-
-  sellerStatValue: {
-
-    color: '#102A43',
-
-    fontSize: 13,
-
-    fontWeight: '900',
-
-  },
-
-  sellerStatLabel: {
-
-    color: '#718091',
-
-    fontSize: 10,
-
-    marginTop: 2,
-
-  },
-
   actionsSection: {
 
-    marginTop: 24,
+    marginTop: 26,
 
-    paddingTop: 22,
+    paddingTop: 20,
 
     borderTopWidth: 1,
 
-    borderTopColor: '#E7EDF4',
+    borderTopColor: '#E8EDF2',
 
   },
 
   actionsTitle: {
 
-    color: '#102A43',
+    fontSize: 18,
 
-    fontSize: 20,
+    fontWeight: '800',
 
-    fontWeight: '900',
+    color: '#172433',
 
-    marginBottom: 8,
+    marginBottom: 5,
 
   },
 
   actionsSubtitle: {
 
+    fontSize: 13,
+
+    lineHeight: 19,
+
     color: '#718091',
 
-    fontSize: 14,
-
-    lineHeight: 21,
-
-    marginBottom: 18,
-
-  },
-
-  contactButton: {
-
-    flexDirection: 'row',
-
-    alignItems: 'center',
-
-    backgroundColor: '#0879C9',
-
-    borderRadius: 18,
-
-    paddingVertical: 19,
-
-    paddingHorizontal: 17,
-
-    marginBottom: 12,
-
-  },
-
-  contactButtonIcon: {
-
-    color: '#FFFFFF',
-
-    fontSize: 27,
-
-    width: 48,
-
-    textAlign: 'center',
+    marginBottom: 15,
 
   },
 
@@ -2772,65 +2161,115 @@ const styles = StyleSheet.create({
 
   },
 
-  contactButtonText: {
+  contactButton: {
 
-    color: '#FFFFFF',
+    minHeight: 68,
 
-    fontSize: 16,
+    borderRadius: 15,
 
-    fontWeight: '900',
-
-  },
-
-  contactButtonSubtext: {
-
-    color: '#EAF5FF',
-
-    fontSize: 13,
-
-    marginTop: 5,
-
-  },
-
-  buttonArrow: {
-
-    color: '#FFFFFF',
-
-    fontSize: 28,
-
-    marginLeft: 8,
-
-  },
-
-  messageButton: {
+    backgroundColor: '#1677B8',
 
     flexDirection: 'row',
 
     alignItems: 'center',
 
+    paddingHorizontal: 16,
+
+    paddingVertical: 12,
+
+    marginTop: 3,
+
+    shadowColor: '#1677B8',
+
+    shadowOffset: { width: 0, height: 4 },
+
+    shadowOpacity: 0.16,
+
+    shadowRadius: 7,
+
+    elevation: 3,
+
+  },
+
+  contactButtonIcon: {
+
+    fontSize: 22,
+
+    color: '#FFFFFF',
+
+    marginRight: 13,
+
+    width: 27,
+
+    textAlign: 'center',
+
+  },
+
+  contactButtonText: {
+
+    color: '#FFFFFF',
+
+    fontSize: 15,
+
+    fontWeight: '800',
+
+  },
+
+  contactButtonSubtext: {
+
+    color: '#E0F1FC',
+
+    fontSize: 12,
+
+    marginTop: 3,
+
+  },
+
+  buttonArrow: {
+
+    fontSize: 27,
+
+    fontWeight: '400',
+
+    color: '#FFFFFF',
+
+    marginLeft: 10,
+
+  },
+
+  messageButton: {
+
+    minHeight: 68,
+
+    borderRadius: 15,
+
     backgroundColor: '#FFFFFF',
-
-    borderRadius: 18,
-
-    paddingVertical: 17,
-
-    paddingHorizontal: 17,
-
-    marginBottom: 12,
 
     borderWidth: 1,
 
-    borderColor: '#DCE6EF',
+    borderColor: '#D8E4EF',
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    paddingHorizontal: 16,
+
+    paddingVertical: 12,
+
+    marginTop: 11,
 
   },
 
   messageButtonIcon: {
 
-    color: '#0879C9',
+    fontSize: 22,
 
-    fontSize: 27,
+    color: '#1677B8',
 
-    width: 48,
+    marginRight: 13,
+
+    width: 27,
 
     textAlign: 'center',
 
@@ -2838,11 +2277,11 @@ const styles = StyleSheet.create({
 
   messageButtonText: {
 
-    color: '#102A43',
+    color: '#17354D',
 
-    fontSize: 16,
+    fontSize: 15,
 
-    fontWeight: '900',
+    fontWeight: '800',
 
   },
 
@@ -2850,47 +2289,51 @@ const styles = StyleSheet.create({
 
     color: '#718091',
 
-    fontSize: 13,
+    fontSize: 12,
 
-    marginTop: 5,
+    marginTop: 3,
 
   },
 
   messageButtonArrow: {
 
-    color: '#0879C9',
+    fontSize: 27,
 
-    fontSize: 28,
+    color: '#1677B8',
 
-    marginLeft: 8,
+    marginLeft: 10,
 
   },
 
   quoteButton: {
 
+    minHeight: 68,
+
+    borderRadius: 15,
+
+    backgroundColor: '#203448',
+
     flexDirection: 'row',
 
     alignItems: 'center',
 
-    backgroundColor: '#152F46',
+    paddingHorizontal: 16,
 
-    borderRadius: 18,
+    paddingVertical: 12,
 
-    paddingVertical: 19,
-
-    paddingHorizontal: 17,
-
-    marginBottom: 6,
+    marginTop: 11,
 
   },
 
   quoteButtonIcon: {
 
+    fontSize: 22,
+
     color: '#FFFFFF',
 
-    fontSize: 27,
+    marginRight: 13,
 
-    width: 48,
+    width: 27,
 
     textAlign: 'center',
 
@@ -2900,25 +2343,19 @@ const styles = StyleSheet.create({
 
     color: '#FFFFFF',
 
-    fontSize: 16,
+    fontSize: 15,
 
-    fontWeight: '900',
+    fontWeight: '800',
 
   },
 
   quoteButtonSubtext: {
 
-    color: '#E6EEF5',
+    color: '#D5E1EB',
 
-    fontSize: 13,
+    fontSize: 12,
 
-    marginTop: 5,
-
-  },
-
-  reviewsSection: {
-
-    marginTop: 24,
+    marginTop: 3,
 
   },
 
@@ -2926,31 +2363,39 @@ const styles = StyleSheet.create({
 
     height: 1,
 
-    backgroundColor: '#E7EDF4',
+    backgroundColor: '#E8EDF2',
 
-    marginBottom: 22,
+    marginBottom: 20,
+
+  },
+
+  reviewsSection: {
+
+    marginTop: 24,
+
+    paddingTop: 2,
 
   },
 
   reviewsTitle: {
 
-    color: '#102A43',
-
     fontSize: 20,
 
-    fontWeight: '900',
+    fontWeight: '800',
 
-    marginBottom: 8,
+    color: '#172433',
+
+    marginBottom: 6,
 
   },
 
   reviewsSubtitle: {
 
+    fontSize: 13,
+
+    lineHeight: 20,
+
     color: '#718091',
-
-    fontSize: 14,
-
-    lineHeight: 21,
 
     marginBottom: 16,
 
@@ -2962,11 +2407,11 @@ const styles = StyleSheet.create({
 
     alignItems: 'center',
 
-    backgroundColor: '#F4F8FC',
+    backgroundColor: '#F4F8FB',
 
-    borderRadius: 20,
+    borderRadius: 15,
 
-    padding: 18,
+    padding: 16,
 
     marginBottom: 16,
 
@@ -2974,13 +2419,13 @@ const styles = StyleSheet.create({
 
   ratingAverage: {
 
-    color: '#102A43',
+    fontSize: 34,
 
-    fontSize: 29,
+    fontWeight: '800',
 
-    fontWeight: '900',
+    color: '#172433',
 
-    width: 80,
+    marginRight: 14,
 
   },
 
@@ -2992,9 +2437,9 @@ const styles = StyleSheet.create({
 
   ratingStars: {
 
-    color: '#E6A100',
+    fontSize: 22,
 
-    fontSize: 25,
+    color: '#E6A100',
 
     letterSpacing: 1,
 
@@ -3002,7 +2447,7 @@ const styles = StyleSheet.create({
 
   ratingCount: {
 
-    fontSize: 13,
+    fontSize: 12,
 
     color: '#718091',
 
@@ -3178,47 +2623,15 @@ const styles = StyleSheet.create({
 
   },
 
-  noReviewsBox: {
-
-    flexDirection: 'row',
-
-    alignItems: 'center',
-
-    backgroundColor: '#F4F8FC',
-
-    borderRadius: 16,
-
-    padding: 15,
-
-    marginBottom: 12,
-
-  },
-
-  noReviewsIcon: {
-
-    fontSize: 22,
-
-    color: '#40556D',
-
-    marginRight: 12,
-
-  },
-
   noReviewsText: {
-
-    flex: 1,
 
     color: '#718091',
 
-    fontSize: 14,
+    fontSize: 13,
 
-    lineHeight: 21,
+    lineHeight: 20,
 
-  },
-
-  reviewsLoading: {
-
-    marginVertical: 15,
+    paddingVertical: 12,
 
   },
 
@@ -3268,6 +2681,18 @@ const styles = StyleSheet.create({
 
   },
 
+  reviewAuthor: {
+
+    fontSize: 12,
+
+    fontWeight: '800',
+
+    color: '#394451',
+
+    marginBottom: 7,
+
+  },
+
   reviewComment: {
 
     fontSize: 14,
@@ -3278,57 +2703,47 @@ const styles = StyleSheet.create({
 
   },
 
-  safePurchase: {
+  reviewNoComment: {
 
-    flexDirection: 'row',
+    fontSize: 13,
 
-    alignItems: 'flex-start',
+    color: '#89939E',
 
-    backgroundColor: '#EFF6FF',
+    fontStyle: 'italic',
 
-    borderRadius: 18,
+  },
 
-    padding: 16,
+  ownerNotice: {
 
     marginTop: 22,
 
-  },
+    padding: 15,
 
-  safePurchaseIcon: {
+    backgroundColor: '#F0F5F9',
 
-    color: '#0879C9',
-
-    fontSize: 26,
-
-    marginRight: 12,
+    borderRadius: 14,
 
   },
 
-  safePurchaseTextGroup: {
-
-    flex: 1,
-
-  },
-
-  safePurchaseTitle: {
-
-    color: '#0879C9',
-
-    fontSize: 15,
-
-    fontWeight: '900',
-
-    marginBottom: 5,
-
-  },
-
-  safePurchaseText: {
-
-    color: '#62758A',
+  ownerNoticeTitle: {
 
     fontSize: 14,
 
-    lineHeight: 21,
+    fontWeight: '800',
+
+    color: '#304457',
+
+    marginBottom: 4,
+
+  },
+
+  ownerNoticeText: {
+
+    fontSize: 13,
+
+    lineHeight: 19,
+
+    color: '#657587',
 
   },
 
@@ -3336,9 +2751,11 @@ const styles = StyleSheet.create({
 
     flex: 1,
 
-    backgroundColor: 'rgba(12,25,38,0.55)',
+    backgroundColor: 'rgba(15, 23, 42, 0.52)',
 
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
+
+    padding: 20,
 
   },
 
@@ -3346,81 +2763,135 @@ const styles = StyleSheet.create({
 
     backgroundColor: '#FFFFFF',
 
-    borderTopLeftRadius: 24,
-
-    borderTopRightRadius: 24,
+    borderRadius: 22,
 
     padding: 22,
 
-    paddingBottom: 32,
+    shadowColor: '#000000',
+
+    shadowOffset: { width: 0, height: 8 },
+
+    shadowOpacity: 0.15,
+
+    shadowRadius: 18,
+
+    elevation: 8,
 
   },
 
   modalTitle: {
 
-    color: '#102A43',
+    fontSize: 24,
 
-    fontSize: 22,
+    fontWeight: '800',
 
-    fontWeight: '900',
+    color: '#1D2733',
 
-    marginBottom: 7,
+    marginBottom: 8,
 
   },
 
   modalSubtitle: {
 
-    color: '#718091',
+    fontSize: 15,
+
+    lineHeight: 22,
+
+    color: '#68727E',
+
+    marginBottom: 22,
+
+  },
+
+  fieldLabel: {
 
     fontSize: 14,
 
-    lineHeight: 21,
+    fontWeight: '700',
 
-    marginBottom: 15,
+    color: '#394451',
+
+    marginBottom: 8,
 
   },
 
   quoteInput: {
 
-    minHeight: 130,
+    minHeight: 140,
 
-    maxHeight: 220,
+    maxHeight: 240,
 
     borderWidth: 1,
 
     borderColor: '#D9E0E6',
 
-    borderRadius: 14,
+    borderRadius: 13,
 
     padding: 14,
 
-    fontSize: 15,
+    fontSize: 16,
 
-    lineHeight: 22,
+    lineHeight: 23,
 
     color: '#1D2733',
 
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FBFCFD',
 
-    marginBottom: 15,
+  },
 
+  characterCount: {
+
+    fontSize: 12,
+
+    color: '#68727E',
+
+    textAlign: 'right',
+
+    marginTop: 6,
+
+    marginBottom: 18,
+
+  },
+
+  warningBox: {
+    backgroundColor: '#FFF7E6',
+    borderColor: '#F0D49B',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  warningText: { color: '#805600', fontSize: 13, lineHeight: 19 },
+
+  contactValue: {
+    fontSize: 18,
+    lineHeight: 27,
+    fontWeight: '800',
+    color: '#172A48',
+    backgroundColor: '#F1F6FB',
+    borderWidth: 1,
+    borderColor: '#DCE5F0',
+    borderRadius: 14,
+    padding: 16,
+    marginTop: 12,
+    marginBottom: 14,
+    textAlign: 'center',
   },
 
   primaryButton: {
 
-    backgroundColor: '#0879C9',
-
-    borderRadius: 14,
-
     minHeight: 52,
+
+    paddingHorizontal: 18,
+
+    borderRadius: 13,
+
+    backgroundColor: '#1677B8',
 
     alignItems: 'center',
 
     justifyContent: 'center',
-
-    paddingHorizontal: 18,
-
-    paddingVertical: 14,
 
   },
 
@@ -3430,43 +2901,37 @@ const styles = StyleSheet.create({
 
     fontSize: 16,
 
-    fontWeight: '900',
-
-  },
-
-  cancelButton: {
-
-    backgroundColor: '#FFFFFF',
-
-    minHeight: 50,
-
-    borderRadius: 14,
-
-    alignItems: 'center',
-
-    justifyContent: 'center',
-
-    borderWidth: 1,
-
-    borderColor: '#D9DDE3',
-
-    marginTop: 10,
-
-  },
-
-  cancelButtonText: {
-
-    color: '#626B78',
-
-    fontSize: 16,
-
     fontWeight: '800',
+
+    textAlign: 'center',
 
   },
 
   disabledButton: {
 
     opacity: 0.65,
+
+  },
+
+  cancelButton: {
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    paddingVertical: 14,
+
+    marginTop: 4,
+
+  },
+
+  cancelButtonText: {
+
+    color: '#68727E',
+
+    fontSize: 15,
+
+    fontWeight: '700',
 
   },
 

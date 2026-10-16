@@ -6,6 +6,7 @@ import {
   Image,
   Linking,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -112,6 +113,7 @@ export default function PriveScreen() {
   const [meusAnuncios, setMeusAnuncios] = useState<PriveAd[]>([]);
   const [carregandoMeusAnuncios, setCarregandoMeusAnuncios] = useState(false);
   const [aSubmeterPerfil, setASubmeterPerfil] = useState(false);
+  const [mensagemSubmissao, setMensagemSubmissao] = useState('');
 
   const [dataNascimento, setDataNascimento] = useState('');
   const [nomeArtistico, setNomeArtistico] = useState('');
@@ -362,21 +364,44 @@ export default function PriveScreen() {
     atualizar(lista.includes(valor) ? lista.filter(item => item !== valor) : [...lista, valor]);
   }
 
+  function avisarCadastro(titulo: string, mensagem: string) {
+    // No navegador, Alert.alert pode não apresentar nada. A mensagem inline
+    // garante que o utilizador percebe por que razão o envio foi interrompido.
+    setMensagemSubmissao(`${titulo}: ${mensagem}`);
+    if (Platform.OS !== 'web') {
+      Alert.alert(titulo, mensagem);
+    }
+  }
+
   function validarCadastro(): boolean {
-    if (!nomeArtistico.trim() || !paisOrigem.trim() || !dataNascimento.trim() || !tipoServico.trim() || !localidade.trim() || !apresentacao.trim()) {
-      Alert.alert('Dados em falta', 'Preencha nome artístico, país de origem, data de nascimento, tipo de serviço, localidade e apresentação.');
+    // Identifica apenas os campos que o estado da aplicação realmente recebeu.
+    // Se algum estiver vazio, abre as secções relevantes para facilitar a correção.
+    const camposEmFalta: string[] = [];
+    if (!nomeArtistico.trim()) camposEmFalta.push('nome artístico');
+    if (!paisOrigem.trim()) camposEmFalta.push('país de origem');
+    if (!dataNascimento.trim()) camposEmFalta.push('data de nascimento');
+    if (!tipoServico.trim()) camposEmFalta.push('tipo de serviço');
+    if (!localidade.trim()) camposEmFalta.push('localidade');
+    if (!apresentacao.trim()) camposEmFalta.push('apresentação');
+
+    if (camposEmFalta.length > 0) {
+      setSeccoesAbertas(atual => ({ ...atual, perfil: true, apresentacao: true, atendimento: true }));
+      avisarCadastro(
+        'Campos não reconhecidos',
+        `A aplicação está a receber estes campos como vazios: ${camposEmFalta.join(', ')}. Volte a confirmar esses campos e tente novamente.`
+      );
       return false;
     }
     const verificacaoIdade = validarMaioridade(dataNascimento);
     if (!verificacaoIdade.valida) {
-      Alert.alert(
+      avisarCadastro(
         'Data de nascimento inválida',
         'Introduza uma data real no formato DD/MM/AAAA. Não são aceites datas incompletas, impossíveis ou futuras.'
       );
       return false;
     }
     if (!verificacaoIdade.maiorDeIdade) {
-      Alert.alert(
+      avisarCadastro(
         'Acesso não permitido',
         'Só é possível criar um perfil no Conecta Privé depois de completar 18 anos.'
       );
@@ -384,15 +409,15 @@ export default function PriveScreen() {
     }
 
     if (!tiposAtendimento.length) {
-      Alert.alert('Atendimento', 'Selecione pelo menos uma modalidade de atendimento.');
+      avisarCadastro('Atendimento', 'Selecione pelo menos uma modalidade de atendimento.');
       return false;
     }
     if (fotografias.length < 5 || fotografias.length > 10) {
-      Alert.alert('Fotografias obrigatórias', 'O perfil precisa de pelo menos 5 e no máximo 10 fotografias. Os vídeos são opcionais.');
+      avisarCadastro('Fotografias obrigatórias', 'O perfil precisa de pelo menos 5 e no máximo 10 fotografias. Os vídeos são opcionais.');
       return false;
     }
     if (!idadeConfirmada || !aceitaTermos || !aceitaPrivacidade || !declaraConteudoLicito || !declaraTitularidade || !aceitaModeracao) {
-      Alert.alert('Declarações obrigatórias', 'Confirme a maioridade e assinale todas as declarações obrigatórias antes de anunciar.');
+      avisarCadastro('Declarações obrigatórias', 'Confirme a maioridade e assinale todas as declarações obrigatórias antes de anunciar.');
       return false;
     }
     return true;
@@ -400,13 +425,14 @@ export default function PriveScreen() {
 
   async function submeterPerfilParaAprovacao() {
     if (aSubmeterPerfil) return;
+    setMensagemSubmissao('');
     if (!validarCadastro()) return;
     try {
       setASubmeterPerfil(true);
       const { data: authData, error: authError } = await supabase.auth.getUser();
       const user = authData?.user;
       if (authError || !user) {
-        Alert.alert('Sessão necessária', 'Inicie sessão na sua conta antes de submeter o perfil.');
+        avisarCadastro('Sessão necessária', 'Inicie sessão na sua conta antes de submeter o perfil.');
         return;
       }
 
@@ -424,16 +450,8 @@ export default function PriveScreen() {
         validade_dias: 30,
       };
 
-      const { data: existente, error: consultaError } = anuncioEmEdicao ? { data: [], error: null } : await supabase
-        .from('anuncios').select('id, estado').eq('user_id', user.id).eq('tipo_anuncio', TIPO_PRIVE)
-        .in('estado', ['em_analise']).contains('dados_especificos', { submissao_prive: true }).limit(1);
-      if (consultaError) throw consultaError;
-      if (existente?.length) {
-        Alert.alert('Pedido já submetido', 'Já existe um perfil Privé deste utilizador pendente de análise.');
-        setMode('meus-anuncios');
-        await carregarMeusAnuncios();
-        return;
-      }
+      // Cada submissão Privé é um anúncio independente. Não bloquear novos perfis
+      // só porque o utilizador já tem outro anúncio em análise.
 
       const payload = {
         user_id: user.id, titulo: nomeArtistico.trim(), descricao: apresentacao.trim(), tipo_anuncio: TIPO_PRIVE,
@@ -452,10 +470,11 @@ export default function PriveScreen() {
         if (insertError) throw insertError;
         anuncioId = inserido.id;
       }
+      setMensagemSubmissao('');
       setMostrarPopupPagamento(true);
     } catch (error: any) {
       console.error('Erro ao submeter perfil Privé para moderação:', error);
-      Alert.alert('Não foi possível submeter', error?.message || 'O perfil não foi enviado. Verifique a ligação e as permissões do Supabase.');
+      avisarCadastro('Não foi possível submeter', error?.message || 'O perfil não foi enviado. Verifique a ligação e as permissões do Supabase.');
     } finally {
       setASubmeterPerfil(false);
     }
@@ -506,20 +525,24 @@ export default function PriveScreen() {
   }
 
   function enviarComprovativo() {
-    Alert.alert(
-      'Comprovativo',
-      'Depois de efetuar o pagamento, envie o comprovativo pelo WhatsApp indicado. O pagamento será confirmado manualmente pelo administrador.',
-      [
-        {
-          text: 'Abrir WhatsApp',
-          onPress: abrirWhatsApp,
-        },
-        {
-          text: 'Cancelar',
-          style: 'cancel',
-        },
-      ]
-    );
+    const mensagem = 'Olá! Efetuei o pagamento do meu perfil no Conecta Privé. Segue o comprovativo para confirmação. Obrigado.';
+    const url = `https://wa.me/351${WHATSAPP}?text=${encodeURIComponent(mensagem)}`;
+
+    // Chamar a abertura diretamente no clique do utilizador para evitar bloqueio de pop-ups.
+    try {
+      if (Platform.OS === 'web') {
+        const abriu = window.open(url, '_blank', 'noopener,noreferrer');
+        if (!abriu) window.location.assign(url);
+        return;
+      }
+      Linking.openURL(url).catch(() => {
+        Alert.alert('Não foi possível abrir o WhatsApp', `Abra o WhatsApp manualmente e envie o comprovativo para ${MBWAY}.`);
+      });
+    } catch (error) {
+      console.error('Erro ao abrir WhatsApp para comprovativo:', error);
+      if (Platform.OS === 'web') window.location.assign(url);
+      else Alert.alert('Não foi possível abrir o WhatsApp', `Envie o comprovativo para ${MBWAY}.`);
+    }
   }
 
   function voltarAoCatalogo() {
@@ -1309,6 +1332,11 @@ export default function PriveScreen() {
 </>)}
 </View>
 
+      {!!mensagemSubmissao && (
+        <View style={styles.submissionErrorBox} accessibilityRole="alert">
+          <Text style={styles.submissionErrorText}>{mensagemSubmissao}</Text>
+        </View>
+      )}
       <View style={styles.section}>
         <TouchableOpacity style={styles.accordionHeader} onPress={() => alternarSeccao('declaracoes')} activeOpacity={0.85}>
   <View style={{ flex: 1 }}><Text style={styles.sectionTitle}>Declarações obrigatórias</Text><Text style={styles.accordionSummary}>Todas as declarações são obrigatórias</Text></View>
@@ -1331,7 +1359,7 @@ export default function PriveScreen() {
           </TouchableOpacity>
         ))}
         <TouchableOpacity style={[styles.primaryButton, (aSubmeterPerfil || aCarregarMedia) && { opacity: 0.6 }]} onPress={submeterPerfilParaAprovacao} disabled={aSubmeterPerfil || aCarregarMedia}>
-          {aSubmeterPerfil ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{anuncioEmEdicao ? 'Guardar alterações e reenviar à moderação' : 'Anunciar e enviar para moderação'}</Text>}
+          {aSubmeterPerfil ? <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 }}><ActivityIndicator color="#FFFFFF" /><Text style={styles.primaryButtonText}>A enviar para moderação…</Text></View> : <Text style={styles.primaryButtonText}>{anuncioEmEdicao ? 'Guardar alterações e reenviar à moderação' : 'Anunciar e enviar para moderação'}</Text>}
         </TouchableOpacity>
         <Text style={styles.sectionText}>O anúncio será enviado ao MASTER mesmo que o comprovativo seja entregue posteriormente. A publicação depende da aprovação do MASTER.</Text>
       
@@ -2197,6 +2225,8 @@ const styles = StyleSheet.create({
     height: 40,
     backgroundColor: '#120811',
   },
+  submissionErrorBox: { backgroundColor: '#4A1720', borderWidth: 1, borderColor: '#E57373', borderRadius: 12, padding: 13, marginTop: 12, marginBottom: 12 },
+  submissionErrorText: { color: '#FFFFFF', fontSize: 14, lineHeight: 20, fontWeight: '700' },
   accordionHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 5 },
   accordionSummary: { color: '#CDB8C5', fontSize: 12, lineHeight: 17, marginTop: 3 },
   accordionArrow: { color: '#E8C58F', fontSize: 25, fontWeight: '900', paddingHorizontal: 4 },
