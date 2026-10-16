@@ -1,6 +1,6 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   ActivityIndicator,
@@ -116,6 +116,9 @@ export default function AnuncioScreen() {
 
   const [enviandoAvaliacao, setEnviandoAvaliacao] = useState(false);
 
+  const galeriaRef = useRef<ScrollView | null>(null);
+  const [indiceImagem, setIndiceImagem] = useState(0);
+
   useEffect(() => {
 
     if (id) {
@@ -133,77 +136,67 @@ export default function AnuncioScreen() {
   }, [id]);
 
   async function carregarAnuncio() {
-
     setLoading(true);
-
     setErro('');
 
     try {
-
-      const { data: auth } = await supabase.auth.getUser();
-
-      const utilizador = auth.user;
-
-      setUtilizadorId(utilizador?.id ?? null);
-
+      // A consulta do anúncio é prioritária: não esperar por autenticação
+      // nem por avaliações para mostrar o conteúdo principal.
       const { data, error } = await supabase
-
         .from('anuncios')
-
         .select(
-
           'id, user_id, titulo, descricao, categoria, localidade, preco, preco_negociavel, tipo_anuncio, contato, dados_especificos'
-
         )
-
         .eq('id', id)
-
         .eq('estado', 'publicado')
-
         .maybeSingle();
 
       if (error) throw error;
 
       if (!data) {
-
         setErro('Este anúncio não está disponível.');
-
         setAnuncio(null);
-
         return;
-
       }
 
       const anuncioCarregado = data as Anuncio;
       const tipoAnuncio = String(anuncioCarregado.tipo_anuncio || '').toLocaleLowerCase('pt-PT');
       const dadosAnuncio = anuncioCarregado.dados_especificos || {};
-      if (Boolean(dadosAnuncio.submissao_prive) || tipoAnuncio.includes('adulto') || tipoAnuncio.includes('privé') || tipoAnuncio.includes('prive')) {
+
+      if (
+        Boolean(dadosAnuncio.submissao_prive) ||
+        tipoAnuncio.includes('adulto') ||
+        tipoAnuncio.includes('privé') ||
+        tipoAnuncio.includes('prive')
+      ) {
         setErro('Este perfil pertence ao Conecta Privé e só pode ser consultado dentro da área Privé.');
         setAnuncio(null);
         return;
       }
 
       setAnuncio(anuncioCarregado);
-
-      await carregarAvaliacoes(
-        anuncioCarregado.id,
-        utilizador?.id ?? null
-      );
-
-    } catch (e: any) {
-
-      console.error('Erro ao carregar anúncio:', e);
-
-      setErro('Não foi possível carregar o anúncio.');
-
-      setAnuncio(null);
-
-    } finally {
-
       setLoading(false);
 
+      // Autenticação e avaliações carregam em segundo plano, sem bloquear a página.
+      void (async () => {
+        try {
+          const { data: auth, error: erroAuth } = await supabase.auth.getUser();
+          if (erroAuth) throw erroAuth;
+          const utilizador = auth.user;
+          setUtilizadorId(utilizador?.id ?? null);
+          await carregarAvaliacoes(anuncioCarregado.id, utilizador?.id ?? null);
+        } catch (e) {
+          console.error('Erro ao carregar sessão/avaliações:', e);
+          // A página continua utilizável mesmo que as avaliações falhem.
+        }
+      })();
+    } catch (e: any) {
+      console.error('Erro ao carregar anúncio:', e);
+      setErro('Não foi possível carregar o anúncio.');
+      setAnuncio(null);
+    } finally {
+      setLoading(false);
     }
-
   }
 
   function formatarPreco() {
@@ -251,13 +244,68 @@ export default function AnuncioScreen() {
     return 'Preço sob consulta';
   }
 
+  function obterContacto(): string {
+    if (!anuncio) return '';
+    const dados = anuncio.dados_especificos ?? {};
+    const candidatos = [
+      anuncio.contato,
+      dados.contato,
+      dados.contacto,
+      dados.telefone,
+      dados.telemovel,
+      dados.telefone_contacto,
+      dados.numero_telefone,
+      dados.whatsapp,
+      dados.email,
+      dados.email_contacto,
+    ];
+    const contacto = candidatos.find(
+      (valor) => typeof valor === 'string' && valor.trim().length > 0
+    );
+    return typeof contacto === 'string' ? contacto.trim() : '';
+  }
+
   function contactar() {
-    if (!anuncio?.contato?.trim()) {
+    if (!obterContacto()) {
       setErro('Este anúncio não tem dados de contacto disponíveis.');
       return;
     }
     setErro('');
     setModalContacto(true);
+  }
+
+  function utilizarContacto() {
+    const contacto = obterContacto();
+    if (!contacto) {
+      setErro('Este anúncio não tem dados de contacto disponíveis.');
+      setModalContacto(false);
+      return;
+    }
+
+    // E-mail deve ser tratado antes do telefone para evitar abrir tel: por engano.
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contacto)) {
+      Linking.openURL(`mailto:${contacto}`).catch(() =>
+        setErro('Não foi possível abrir a aplicação de e-mail. Copia o endereço apresentado.'));
+      return;
+    }
+
+    const dados = anuncio?.dados_especificos ?? {};
+    const whatsappGuardado = [dados.whatsapp, dados.numero_whatsapp, dados.telefone_whatsapp]
+      .some((valor) => typeof valor === 'string' && valor.trim() === contacto);
+    const numero = contacto.replace(/[^+0-9]/g, '');
+    if (numero.replace(/\D/g, '').length >= 6) {
+      if (whatsappGuardado) {
+        const internacional = numero.replace(/^\+/, '').replace(/^00/, '');
+        Linking.openURL(`https://wa.me/${internacional}`).catch(() =>
+          setErro('Não foi possível abrir o WhatsApp. Copia o número apresentado.'));
+      } else {
+        Linking.openURL(`tel:${numero}`).catch(() =>
+          setErro('Não foi possível abrir a aplicação de chamadas. Copia o número apresentado.'));
+      }
+      return;
+    }
+
+    setErro('O contacto está apresentado acima. Copia-o para o utilizar.');
   }
 
   async function abrirMensagens() {
@@ -338,13 +386,8 @@ export default function AnuncioScreen() {
 
       setAvaliacoes([]);
 
-      Alert.alert(
-
-        'Avaliações',
-
-        e?.message || 'Não foi possível carregar as avaliações.'
-
-      );
+      // A falha das avaliações não deve bloquear nem interromper a consulta do anúncio.
+      console.warn('Avaliações indisponíveis neste momento.');
 
     } finally {
 
@@ -688,6 +731,7 @@ export default function AnuncioScreen() {
     return (
 
       <View style={styles.center}>
+        <Stack.Screen options={{ headerShown: false }} />
 
         <ActivityIndicator size="large" color="#1677B8" />
 
@@ -704,6 +748,7 @@ export default function AnuncioScreen() {
     return (
 
       <View style={styles.center}>
+        <Stack.Screen options={{ headerShown: false }} />
 
         <Text style={styles.errorTitle}>Anúncio indisponível</Text>
 
@@ -770,27 +815,43 @@ export default function AnuncioScreen() {
     'created_at',
 
     'updated_at',
-
+    'contato',
+    'contacto',
+    'telefone',
+    'telemovel',
+    'telefone_contacto',
+    'numero_telefone',
+    'whatsapp',
+    'numero_whatsapp',
+    'telefone_whatsapp',
+    'email',
+    'email_contacto',
+    'nome_profissional',
+    'nome_negocio',
+    'nome_empresa',
+    'experiencia',
+    'fotos',
+    'fotografias',
   ]);
 
   const camposVisiveis = Object.entries(dadosEspecificos).filter(
 
     ([chave, valor]) => {
 
+      const chaveNormalizada = chave.toLowerCase().replace(/[\s_-]+/g, '');
+      const valorNormalizado = String(valor ?? '').trim().toLocaleLowerCase('pt-PT');
+      const localidadeNormalizada = String(anuncio.localidade ?? '').trim().toLocaleLowerCase('pt-PT');
+      const eZonaAtendimento = ['zonaatendimento', 'areaatendimento', 'localidadesatendidas', 'zonadeatendimento'].includes(chaveNormalizada);
+      const zonaRepeteLocalidade = eZonaAtendimento && valorNormalizado && localidadeNormalizada && valorNormalizado === localidadeNormalizada;
+
       if (
-
         camposInternos.has(chave.toLowerCase()) ||
-
         valor === null ||
-
         valor === undefined ||
-
-        valor === ''
-
+        valor === '' ||
+        zonaRepeteLocalidade
       ) {
-
         return false;
-
       }
 
       if (typeof valor === 'object') return false;
@@ -823,6 +884,7 @@ export default function AnuncioScreen() {
   return (
 
     <View style={styles.container}>
+      <Stack.Screen options={{ headerShown: false }} />
 
       <ScrollView
 
@@ -863,99 +925,93 @@ export default function AnuncioScreen() {
           </View>
 
           {imagensAnuncio.length > 0 ? (
-
             <View style={styles.galleryContainer}>
-
-              <ScrollView
-
-                horizontal
-
-                pagingEnabled
-
-                showsHorizontalScrollIndicator={false}
-
-                style={styles.gallery}
-
-              >
-
-                {imagensAnuncio.map((url, indice) => (
-
-                  <Image
-
-                    key={`${url}-${indice}`}
-
-                    source={{ uri: url }}
-
-                    style={[
-
-                      styles.galleryImage,
-
-                      { width: Math.min(Math.max(260, larguraEcra - 76), 980) },
-
-                    ]}
-
-                    resizeMode="cover"
-
-                    accessibilityLabel={`Fotografia ${indice + 1} do anúncio`}
-
-                  />
-
-                ))}
-
-              </ScrollView>
-
+              <View style={styles.galleryFrame}>
+                <ScrollView
+                  ref={galeriaRef}
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.gallery}
+                  onMomentumScrollEnd={(event) => {
+                    const largura = Math.max(1, Math.min(larguraEcra - 76, 980));
+                    setIndiceImagem(Math.max(0, Math.min(imagensAnuncio.length - 1, Math.round(event.nativeEvent.contentOffset.x / largura))));
+                  }}
+                >
+                  {imagensAnuncio.map((url, indice) => (
+                    <Image
+                      key={`${url}-${indice}`}
+                      source={{ uri: url }}
+                      style={[styles.galleryImage, { width: Math.min(Math.max(260, larguraEcra - (larguraEcra < 600 ? 72 : 92)), 1076) }]}
+                      resizeMode="cover"
+                      accessibilityLabel={`Fotografia ${indice + 1} do anúncio`}
+                    />
+                  ))}
+                </ScrollView>
+                {imagensAnuncio.length > 1 ? (
+                  <>
+                    <View style={styles.galleryCounter}>
+                      <Text style={styles.galleryCounterText}>{indiceImagem + 1} / {imagensAnuncio.length}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.galleryArrow, styles.galleryArrowLeft, indiceImagem === 0 && styles.galleryArrowDisabled]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Ver fotografia anterior"
+                      disabled={indiceImagem === 0}
+                      onPress={() => {
+                        const proximo = Math.max(0, indiceImagem - 1);
+                        setIndiceImagem(proximo);
+                        galeriaRef.current?.scrollTo({ x: proximo * Math.min(Math.max(260, larguraEcra - (larguraEcra < 600 ? 72 : 92)), 1076), animated: true });
+                      }}
+                    >
+                      <Text style={styles.galleryArrowText}>‹</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.galleryArrow, styles.galleryArrowRight, indiceImagem >= imagensAnuncio.length - 1 && styles.galleryArrowDisabled]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Ver fotografia seguinte"
+                      disabled={indiceImagem >= imagensAnuncio.length - 1}
+                      onPress={() => {
+                        const proximo = Math.min(imagensAnuncio.length - 1, indiceImagem + 1);
+                        setIndiceImagem(proximo);
+                        galeriaRef.current?.scrollTo({ x: proximo * Math.min(Math.max(260, larguraEcra - (larguraEcra < 600 ? 72 : 92)), 1076), animated: true });
+                      }}
+                    >
+                      <Text style={styles.galleryArrowText}>›</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : null}
+              </View>
               {imagensAnuncio.length > 1 ? (
-
                 <Text style={styles.galleryHint}>
-
-                  Desliza para ver as {imagensAnuncio.length} fotografias
-
+                  Usa as setas ou desliza a galeria para ver as fotografias
                 </Text>
-
               ) : null}
-
             </View>
-
           ) : (
-
             <View style={styles.noImageBox}>
-
               <Text style={styles.noImageIcon}>▧</Text>
-
-              <Text style={styles.noImageText}>
-
-                Sem fotografias disponíveis
-
-              </Text>
-
+              <Text style={styles.noImageText}>Sem fotografias disponíveis</Text>
             </View>
-
           )}
 
-          <Text style={styles.title}>{anuncio.titulo}</Text>
+          <View style={styles.listingHeading}>
+            <Text style={styles.metaLabel}>TÍTULO DO ANÚNCIO</Text>
+            <Text style={styles.title}>{anuncio.titulo}</Text>
+            {anuncio.categoria ? (
+              <View style={styles.categoryBadge}>
+                <Text style={styles.categoryBadgeText}>{anuncio.categoria}</Text>
+              </View>
+            ) : null}
+          </View>
 
-          {dadosEspecificos.nome_profissional ||
-
-          dadosEspecificos.nome_negocio ? (
-
-            <Text style={styles.businessName}>
-
-              {String(
-
-                dadosEspecificos.nome_profissional ||
-
-                  dadosEspecificos.nome_negocio
-
-              )}
-
-            </Text>
-
-          ) : null}
-
-          {anuncio.categoria ? (
-
-            <Text style={styles.category}>{anuncio.categoria}</Text>
-
+          {(dadosEspecificos.nome_profissional || dadosEspecificos.nome_negocio || dadosEspecificos.nome_empresa) ? (
+            <View style={styles.businessNameBlock}>
+              <Text style={styles.metaLabel}>NOME / EMPRESA</Text>
+              <Text style={styles.businessName}>
+                {String(dadosEspecificos.nome_profissional || dadosEspecificos.nome_negocio || dadosEspecificos.nome_empresa)}
+              </Text>
+            </View>
           ) : null}
 
           {anuncio.localidade ? (
@@ -966,7 +1022,7 @@ export default function AnuncioScreen() {
 
               <View style={styles.locationTextGroup}>
 
-                <Text style={styles.infoLabel}>LOCALIDADE</Text>
+                <Text style={styles.infoLabel}>LOCALIDADE DO ANÚNCIO</Text>
 
                 <Text style={styles.infoValue}>{anuncio.localidade}</Text>
 
@@ -989,9 +1045,7 @@ export default function AnuncioScreen() {
             <View style={styles.descriptionCard}>
 
               <Text style={styles.sectionHeading}>
-
-                Sobre este anúncio
-
+                Descrição do anúncio
               </Text>
 
               <Text style={styles.description}>
@@ -1041,121 +1095,10 @@ export default function AnuncioScreen() {
           {erro ? <View style={styles.warningBox}><Text style={styles.warningText}>{erro}</Text></View> : null}
 
           <View style={styles.actionsSection}>
-
-            <Text style={styles.actionsTitle}>
-
-              Interessado neste anúncio?
-
-            </Text>
-
+            <Text style={styles.actionsTitle}>Queres saber mais sobre este serviço?</Text>
             <Text style={styles.actionsSubtitle}>
-
-              Escolhe como queres entrar em contacto com o anunciante.
-
+              Entra em contacto com o anunciante ou pede um orçamento através dos botões sempre disponíveis no fundo do ecrã.
             </Text>
-
-            <TouchableOpacity
-
-              style={styles.contactButton}
-
-              onPress={contactar}
-
-              activeOpacity={0.82}
-
-            >
-
-              <Text style={styles.contactButtonIcon}>☎</Text>
-
-              <View style={styles.buttonTextGroup}>
-
-                <Text style={styles.contactButtonText}>
-
-                  Ver contacto
-
-                </Text>
-
-                <Text style={styles.contactButtonSubtext}>
-
-                  Consultar os dados de contacto
-
-                </Text>
-
-              </View>
-
-              <Text style={styles.buttonArrow}>›</Text>
-
-            </TouchableOpacity>
-
-            <TouchableOpacity
-
-              style={styles.messageButton}
-
-              onPress={abrirMensagens}
-
-              activeOpacity={0.82}
-
-            >
-
-              <Text style={styles.messageButtonIcon}>✉</Text>
-
-              <View style={styles.buttonTextGroup}>
-
-                <Text style={styles.messageButtonText}>
-
-                  Enviar mensagem
-
-                </Text>
-
-                <Text style={styles.messageButtonSubtext}>
-
-                  Conversa privada no Conecta
-
-                </Text>
-
-              </View>
-
-              <Text style={styles.messageButtonArrow}>›</Text>
-
-            </TouchableOpacity>
-
-            <TouchableOpacity
-
-              style={styles.quoteButton}
-
-              onPress={() => {
-
-                setDescricaoOrcamento('');
-
-                setModalOrcamento(true);
-
-              }}
-
-              activeOpacity={0.82}
-
-            >
-
-              <Text style={styles.quoteButtonIcon}>☷</Text>
-
-              <View style={styles.buttonTextGroup}>
-
-                <Text style={styles.quoteButtonText}>
-
-                  Pedir orçamento
-
-                </Text>
-
-                <Text style={styles.quoteButtonSubtext}>
-
-                  Explica o que precisas
-
-                </Text>
-
-              </View>
-
-              <Text style={styles.buttonArrow}>›</Text>
-
-            </TouchableOpacity>
-
           </View>
 
           <View style={styles.reviewsSection}>
@@ -1516,6 +1459,44 @@ export default function AnuncioScreen() {
 
       </ScrollView>
 
+      <View style={styles.stickyActionsOuter}>
+        <View style={styles.stickyActions}>
+          <TouchableOpacity
+            style={[styles.stickyActionButton, styles.stickyMessageButton]}
+            onPress={abrirMensagens}
+            activeOpacity={0.82}
+            accessibilityRole="button"
+            accessibilityLabel="Enviar mensagem ao anunciante"
+          >
+            <Text style={styles.stickyActionIcon}>✉</Text>
+            <Text style={styles.stickyMessageText} numberOfLines={1}>Mensagem</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.stickyActionButton, styles.stickyQuoteButton]}
+            onPress={() => {
+              setDescricaoOrcamento('');
+              setModalOrcamento(true);
+            }}
+            activeOpacity={0.82}
+            accessibilityRole="button"
+            accessibilityLabel="Pedir orçamento para este anúncio"
+          >
+            <Text style={styles.stickyActionIcon}>▤</Text>
+            <Text style={styles.stickyQuoteText} numberOfLines={1}>Orçamento</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.stickyActionButton, styles.stickyContactButton]}
+            onPress={contactar}
+            activeOpacity={0.82}
+            accessibilityRole="button"
+            accessibilityLabel="Ver contacto do anunciante"
+          >
+            <Text style={styles.stickyActionIcon}>☎</Text>
+            <Text style={styles.stickyContactText} numberOfLines={1}>Contacto</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       <Modal
         visible={modalContacto}
         transparent
@@ -1526,21 +1507,11 @@ export default function AnuncioScreen() {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Contacto do anunciante</Text>
             <Text style={styles.modalSubtitle}>Dados de contacto fornecidos neste anúncio</Text>
-            <Text selectable style={styles.contactValue}>{anuncio?.contato || 'Contacto indisponível'}</Text>
+            <Text selectable style={styles.contactValue}>{obterContacto() || 'Contacto indisponível'}</Text>
             <TouchableOpacity
               style={styles.primaryButton}
               activeOpacity={0.8}
-              onPress={() => {
-                const contacto = String(anuncio?.contato || '').trim();
-                const telefone = contacto.replace(/[^+0-9]/g, '');
-                if (telefone.length >= 6) {
-                  Linking.openURL(`tel:${telefone}`).catch(() => setErro('Não foi possível abrir a aplicação de chamadas.'));
-                } else if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contacto)) {
-                  Linking.openURL(`mailto:${contacto}`).catch(() => setErro('Não foi possível abrir a aplicação de e-mail.'));
-                } else {
-                  setErro('O contacto foi apresentado acima. Copia-o para o utilizar.');
-                }
-              }}
+              onPress={utilizarContacto}
             >
               <Text style={styles.primaryButtonText}>Utilizar contacto</Text>
             </TouchableOpacity>
@@ -1692,11 +1663,12 @@ const styles = StyleSheet.create({
   },
 
   content: {
-
-    padding: 18,
-
-    paddingBottom: 40,
-
+    width: '100%',
+    maxWidth: 1120,
+    alignSelf: 'center',
+    paddingHorizontal: Platform.OS === 'web' ? 24 : 14,
+    paddingTop: Platform.OS === 'web' ? 24 : 14,
+    paddingBottom: 148,
   },
 
   center: {
@@ -1774,70 +1746,71 @@ const styles = StyleSheet.create({
   },
 
   card: {
-
     backgroundColor: '#FFFFFF',
-
-    borderRadius: 22,
-
-    padding: 20,
-
+    borderRadius: 24,
+    padding: 26,
     borderWidth: 1,
-
-    borderColor: '#E5EAF0',
-
-    shadowColor: '#1D2733',
-
-    shadowOffset: { width: 0, height: 5 },
-
-    shadowOpacity: 0.045,
-
-    shadowRadius: 12,
-
-    elevation: 2,
-
+    borderColor: '#E3EAF2',
+    shadowColor: '#17324D',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.07,
+    shadowRadius: 22,
+    elevation: 3,
   },
 
   galleryContainer: {
-
     marginHorizontal: -4,
-
-    marginBottom: 18,
-
+    marginBottom: 22,
   },
-
-  gallery: {
-
+  galleryFrame: {
     width: '100%',
-
-  },
-
-  galleryImage: {
-
-    height: 340,
-
+    maxWidth: 980,
+    alignSelf: 'center',
+    position: 'relative',
+    overflow: 'hidden',
     borderRadius: 18,
-
-    marginRight: 10,
-
     backgroundColor: '#E8EDF2',
-
   },
-
+  gallery: { width: '100%' },
+  galleryImage: {
+    height: Platform.OS === 'web' ? 420 : 300,
+    borderRadius: 18,
+    backgroundColor: '#E8EDF2',
+  },
+  galleryCounter: {
+    position: 'absolute',
+    right: 14,
+    bottom: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 18,
+    backgroundColor: 'rgba(18, 32, 47, 0.82)',
+  },
+  galleryCounterText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
+  galleryArrow: {
+    position: 'absolute',
+    top: '45%',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(18, 32, 47, 0.78)',
+  },
+  galleryArrowLeft: { left: 12 },
+  galleryArrowRight: { right: 12 },
+  galleryArrowDisabled: { opacity: 0.35 },
+  galleryArrowText: { color: '#FFFFFF', fontSize: 30, lineHeight: 34, fontWeight: '500' },
   galleryHint: {
-
     color: '#718091',
-
     fontSize: 12,
-
     textAlign: 'center',
-
-    marginTop: 8,
-
+    marginTop: 9,
   },
 
   noImageBox: {
 
-    height: 190,
+    height: 260,
 
     borderRadius: 18,
 
@@ -1875,18 +1848,36 @@ const styles = StyleSheet.create({
 
   },
 
-  businessName: {
-
-    color: '#177DBA',
-
-    fontSize: 17,
-
+  listingHeading: {
+    gap: 9,
+    alignItems: 'flex-start',
+    marginBottom: 6,
+  },
+  categoryBadge: {
+    backgroundColor: '#EAF4FC',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  categoryBadgeText: {
+    color: '#1677B8',
+    fontSize: 12,
     fontWeight: '800',
-
-    marginTop: 6,
-
-    marginBottom: 8,
-
+    textTransform: 'uppercase',
+    letterSpacing: 0.35,
+  },
+  businessNameBlock: { marginTop: 8, marginBottom: 5 },
+  metaLabel: {
+    color: '#7B8794',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.7,
+    marginBottom: 3,
+  },
+  businessName: {
+    color: '#177DBA',
+    fontSize: 16,
+    fontWeight: '800',
   },
 
   typeBadge: {
@@ -1920,27 +1911,12 @@ const styles = StyleSheet.create({
   },
 
   title: {
-
-    fontSize: 27,
-
-    lineHeight: 34,
-
+    fontSize: Platform.OS === 'web' ? 28 : 25,
+    lineHeight: Platform.OS === 'web' ? 34 : 31,
     fontWeight: '800',
-
     color: '#172433',
-
-    marginBottom: 8,
-
-  },
-
-  category: {
-
-    fontSize: 15,
-
-    color: '#68727E',
-
-    marginBottom: 8,
-
+    marginBottom: 0,
+    flexShrink: 1,
   },
 
   locationBox: {
@@ -2000,25 +1976,20 @@ const styles = StyleSheet.create({
   },
 
   priceBox: {
-
-    backgroundColor: '#F0F7FC',
-
-    borderRadius: 16,
-
-    padding: 16,
-
-    marginTop: 14,
-
+    backgroundColor: '#EFF7FD',
+    borderRadius: 18,
+    padding: 20,
+    marginTop: 18,
+    borderWidth: 1,
+    borderColor: '#D9ECFA',
   },
 
   price: {
-
-    fontSize: 28,
-
+    fontSize: Platform.OS === 'web' ? 25 : 22,
+    lineHeight: Platform.OS === 'web' ? 31 : 28,
     fontWeight: '800',
-
     color: '#1677B8',
-
+    flexShrink: 1,
   },
 
   sectionHeading: {
@@ -2121,9 +2092,9 @@ const styles = StyleSheet.create({
 
   actionsSection: {
 
-    marginTop: 26,
+    marginTop: 32,
 
-    paddingTop: 20,
+    paddingTop: 24,
 
     borderTopWidth: 1,
 
@@ -2371,9 +2342,9 @@ const styles = StyleSheet.create({
 
   reviewsSection: {
 
-    marginTop: 24,
+    marginTop: 32,
 
-    paddingTop: 2,
+    paddingTop: 8,
 
   },
 
@@ -2877,6 +2848,79 @@ const styles = StyleSheet.create({
     marginTop: 12,
     marginBottom: 14,
     textAlign: 'center',
+  },
+
+  stickyActionsOuter: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 20,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderTopColor: '#E2EAF2',
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: Platform.OS === 'web' ? 12 : 18,
+    shadowColor: '#18324A',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 12,
+  },
+  stickyActions: {
+    width: '100%',
+    maxWidth: 1080,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  stickyActionButton: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 52,
+    borderRadius: 14,
+    paddingHorizontal: 5,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  stickyMessageButton: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#1677B8',
+  },
+  stickyQuoteButton: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#1677B8',
+  },
+  stickyContactButton: {
+    backgroundColor: '#0EAD73',
+    borderWidth: 1,
+    borderColor: '#0EAD73',
+  },
+  stickyActionIcon: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#1677B8',
+  },
+  stickyMessageText: {
+    color: '#1677B8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  stickyQuoteText: {
+    color: '#1677B8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  stickyContactText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
   },
 
   primaryButton: {
