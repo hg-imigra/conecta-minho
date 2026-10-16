@@ -3440,11 +3440,10 @@ export default function ContaScreen() {
             <View
               style={s.choiceIconUser}
             >
-              <Text
-                style={s.choiceIconText}
-              >
-                👤
-              </Text>
+              <View style={s.profileUserGlyph}>
+                <View style={s.profileUserHead} />
+                <View style={s.profileUserBody} />
+              </View>
             </View>
 
             <View
@@ -3497,11 +3496,7 @@ export default function ContaScreen() {
                 s.choiceIconProfessional
               }
             >
-              <Text
-                style={s.choiceIconText}
-              >
-                🧑‍🔧
-              </Text>
+              <Text style={s.profileGlyphText}>⚒</Text>
             </View>
 
             <View
@@ -3550,11 +3545,13 @@ export default function ContaScreen() {
             <View
               style={s.choiceIconCompany}
             >
-              <Text
-                style={s.choiceIconText}
-              >
-                🏢
-              </Text>
+              <View style={s.profileBuildingGlyph}>
+                <View style={s.profileBuildingWindows}>
+                  {Array.from({ length: 9 }, (_, i) => (
+                    <View key={i} style={s.profileBuildingWindow} />
+                  ))}
+                </View>
+              </View>
             </View>
 
             <View
@@ -3601,9 +3598,8 @@ export default function ContaScreen() {
             activeOpacity={0.82}
           >
             <View style={s.choiceIconAdmin}>
-              <Text style={s.choiceAdminIcon}>♙</Text>
-              <View style={s.choiceAdminLock}>
-                <Text style={s.choiceAdminLockText}>●</Text>
+              <View style={s.profileShieldGlyph}>
+                <Text style={s.profileShieldCheck}>✓</Text>
               </View>
             </View>
             <View style={s.choiceOptionText}>
@@ -4109,6 +4105,74 @@ const s = StyleSheet.create({
 
   choiceIconText: {
     fontSize: 29,
+  },
+
+  profileGlyphText: {
+    fontSize: 31,
+    lineHeight: 38,
+    color: '#173B63',
+    fontWeight: '600',
+  },
+
+  profileUserGlyph: {
+    width: 34,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileUserHead: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: '#173B63',
+    marginBottom: 3,
+  },
+  profileUserBody: {
+    width: 24,
+    height: 13,
+    borderTopLeftRadius: 13,
+    borderTopRightRadius: 13,
+    borderWidth: 2,
+    borderBottomWidth: 0,
+    borderColor: '#173B63',
+  },
+  profileBuildingGlyph: {
+    width: 25,
+    height: 31,
+    borderWidth: 2,
+    borderColor: '#173B63',
+    padding: 3,
+    justifyContent: 'center',
+  },
+  profileBuildingWindows: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 3,
+  },
+  profileBuildingWindow: {
+    width: 5,
+    height: 5,
+    backgroundColor: '#173B63',
+  },
+  profileShieldGlyph: {
+    width: 29,
+    height: 34,
+    borderWidth: 2,
+    borderColor: '#173B63',
+    borderTopLeftRadius: 10,
+    borderTopRightRadius: 10,
+    borderBottomLeftRadius: 15,
+    borderBottomRightRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileShieldCheck: {
+    color: '#173B63',
+    fontSize: 22,
+    fontWeight: '800',
+    marginTop: -2,
   },
 
   choiceOptionText: {
