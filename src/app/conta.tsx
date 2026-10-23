@@ -1071,31 +1071,56 @@ export default function ContaScreen() {
     const nomeLimpo = nome.trim();
     const apelidoLimpo = apelido.trim();
 
+    // Alert.alert funciona na aplicação nativa; no navegador usamos window.alert.
+    // A verificação de window evita erros durante a renderização no servidor.
+    const notificar = (titulo: string, mensagem: string) => {
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(`${titulo}\n\n${mensagem}`);
+      } else {
+        Alert.alert(titulo, mensagem);
+      }
+    };
+
     if (!nomeLimpo || !apelidoLimpo || !dataNascimento.trim() || !emailLimpo || !password) {
-      Alert.alert('Dados em falta', 'Preencha o nome, apelido, data de nascimento, e-mail e palavra-passe.');
+      notificar('Dados em falta', 'Preencha o nome, apelido, data de nascimento, e-mail e palavra-passe.');
       return;
     }
 
     if (!/^\d{2}\/\d{2}\/\d{4}$/.test(dataNascimento.trim())) {
-      Alert.alert('Data inválida', 'Introduza a data de nascimento no formato DD/MM/AAAA.');
+      notificar('Data inválida', 'Introduza a data de nascimento no formato DD/MM/AAAA.');
       return;
     }
+
     const [dia, mes, ano] = dataNascimento.trim().split('/').map(Number);
     const dataValida = new Date(ano, mes - 1, dia);
-    if (dataValida.getFullYear() !== ano || dataValida.getMonth() !== mes - 1 || dataValida.getDate() !== dia || ano < 1900 || dataValida > new Date()) {
-      Alert.alert('Data inválida', 'Verifique a data de nascimento introduzida.');
+    if (
+      dataValida.getFullYear() !== ano ||
+      dataValida.getMonth() !== mes - 1 ||
+      dataValida.getDate() !== dia ||
+      ano < 1900 ||
+      dataValida > new Date()
+    ) {
+      notificar('Data inválida', 'Verifique a data de nascimento introduzida.');
       return;
     }
+
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailLimpo)) {
-      Alert.alert('E-mail inválido', 'Introduza um endereço de e-mail válido.');
+      notificar('E-mail inválido', 'Introduza um endereço de e-mail válido.');
       return;
     }
-    if (password.length < 8 || !/[A-Za-zÀ-ÿ]/.test(password) || !/\d/.test(password) || !/[^A-Za-zÀ-ÿ0-9]/.test(password)) {
-      Alert.alert('Palavra-passe fraca', 'Use pelo menos 8 caracteres, incluindo uma letra, um número e um carácter especial.');
+
+    if (
+      password.length < 8 ||
+      !/[A-Za-zÀ-ÿ]/.test(password) ||
+      !/\d/.test(password) ||
+      !/[^A-Za-zÀ-ÿ0-9]/.test(password)
+    ) {
+      notificar('Palavra-passe fraca', 'Use pelo menos 8 caracteres, incluindo uma letra, um número e um carácter especial.');
       return;
     }
+
     if (!aceitouTermos) {
-      Alert.alert('Consentimento necessário', 'Tem de aceitar os Termos e Condições e a Política de Privacidade para criar a conta.');
+      notificar('Consentimento necessário', 'Tem de aceitar os Termos e Condições e a Política de Privacidade para criar a conta.');
       return;
     }
 
@@ -1113,24 +1138,34 @@ export default function ContaScreen() {
             aceitou_termos: true,
             aceitou_termos_em: new Date().toISOString(),
             tipo_conta: tipoConta,
-            plano: tipoConta === 'profissional' ? 'profissional' : tipoConta === 'empresa' ? 'empresa' : 'gratuito',
+            plano: tipoConta === 'profissional'
+              ? 'profissional'
+              : tipoConta === 'empresa'
+                ? 'empresa'
+                : 'gratuito',
           },
         },
       });
+
       if (error) {
-        Alert.alert('Não foi possível criar a conta', error.message);
+        notificar('Não foi possível criar a conta', error.message);
         return;
       }
+
       if (!data.session) {
-        Alert.alert('Conta criada', 'Verifique o seu e-mail para confirmar o endereço antes de iniciar sessão.');
+        notificar('Conta criada', 'Verifique o seu e-mail para confirmar o endereço antes de iniciar sessão.');
         setModoRegisto(false);
         setPassword('');
         return;
       }
+
       setSession(data.session);
       router.replace('/');
-    } catch (error: any) {
-      Alert.alert('Erro ao criar conta', error?.message || 'Ocorreu um erro inesperado. Tente novamente.');
+    } catch (error: unknown) {
+      const mensagem = error instanceof Error
+        ? error.message
+        : 'Ocorreu um erro inesperado. Tente novamente.';
+      notificar('Erro ao criar conta', mensagem);
     } finally {
       setLoading(false);
     }
