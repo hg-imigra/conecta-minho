@@ -1089,14 +1089,26 @@ export default function MaisScreen() {
           )
             .slice(0, 12)
             .map((item: any, index: number) => ({
-              id: `${cidade}-${index}-${String(item.title || "noticia")}`,
-              titulo: decodeHtml(String(item.title || "Notícia local")),
-              resumo: extrairResumo(
-                String(item.description || item.content || ""),
+              id: `${cidade}-${index}-${String(
+                item.titulo || item.title || "noticia"
+              )}`,
+              titulo: decodeHtml(
+                String(item.titulo || item.title || "Notícia local")
               ),
-              data: formatarData(String(item.pubDate || item.published || "")),
+              resumo: extrairResumo(
+                String(
+                  item.resumo || item.description || item.content || ""
+                ),
+              ),
+              data: formatarData(
+                String(
+                  item.data || item.pubDate || item.published || item.dataOriginal || ""
+                ),
+              ),
               fonte: decodeHtml(
-                String(item.source || item.author || "Notícia local"),
+                String(
+                  item.fonte || item.source || item.author || "Notícia local"
+                ),
               ),
             }))
             .filter((item: NewsItem) => Boolean(item.titulo));
