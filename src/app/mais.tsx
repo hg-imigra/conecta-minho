@@ -1348,7 +1348,22 @@ export default function MaisScreen() {
       local.horario ? `Horário: ${local.horario}` : "",
       local.observacao || "",
     ].filter(Boolean);
-    Alert.alert(local.nome, linhas.join("\n\n"), [
+
+    const detalhes = linhas.join("\n\n");
+
+    // Alert.alert não apresenta diálogos no navegador. Na versão web,
+    // usamos o diálogo nativo do browser e permitimos abrir a navegação.
+    if (typeof window !== "undefined") {
+      const abrir = window.confirm(
+        `${local.nome}\n\n${detalhes}\n\nQueres abrir a navegação no Google Maps?`,
+      );
+      if (abrir) {
+        void abrirNavegacao(local, "google");
+      }
+      return;
+    }
+
+    Alert.alert(local.nome, detalhes, [
       { text: "Fechar", style: "cancel" },
       { text: "Waze", onPress: () => abrirNavegacao(local, "waze") },
       { text: "Google Maps", onPress: () => abrirNavegacao(local, "google") },
